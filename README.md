@@ -101,7 +101,7 @@ flowchart LR
 
 ```powershell
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/CleanTB.git
+git clone https://github.com/GHOSTIEx9/CleanTB.git
 cd CleanTB
 
 # Build Release binary

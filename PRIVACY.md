@@ -53,4 +53,6 @@ If we update CleanTB in the future, any revisions to this Privacy Policy will be
 ---
 
 ### 8. Contact Us
-If you have any questions or feedback regarding this Privacy Policy or CleanTB, please contact us by opening an issue on our official GitHub repository.
+If you have any questions or feedback regarding this Privacy Policy or CleanTB, please contact us by opening an issue on our official GitHub repository:
+- **Support & Issues:** https://github.com/GHOSTIEx9/CleanTB/issues
+
