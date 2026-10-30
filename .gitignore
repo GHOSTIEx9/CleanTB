@@ -1,0 +1,20 @@
+## Build and Output directories
+[Bb]in/
+[Oo]bj/
+[Dd]ist/
+
+## Visual Studio & IDE files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Runtime config and logs
+config.json
+crash.log
+
+## Ensure required native DLLs are tracked
+!ExplorerTAP.dll
+!ExplorerHooks.dll
