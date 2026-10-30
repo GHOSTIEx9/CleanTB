@@ -14,8 +14,8 @@
 ## Runtime config and logs
 config.json
 crash.log
+CleanTB-Setup.exe
 
 ## Ensure required native DLLs are tracked
 !ExplorerTAP.dll
 !ExplorerHooks.dll
-
