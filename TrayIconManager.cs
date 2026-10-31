@@ -78,7 +78,7 @@ public class TrayIconManager : IDisposable
 
         if (_config.ShowHardwareStats)
         {
-            _statsOverlay.Show();
+            _statsOverlay.CheckVisibilityAndRender();
         }
 
         // Window message listener for TaskbarCreated & DisplayChange
@@ -87,7 +87,7 @@ public class TrayIconManager : IDisposable
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
             if (_config.ShowHardwareStats && !_statsOverlay.IsDisposed)
             {
-                _statsOverlay.UpdateDockPosition(force: true);
+                _statsOverlay.CheckVisibilityAndRender();
             }
         });
 
@@ -135,8 +135,7 @@ public class TrayIconManager : IDisposable
             UpdateMenuStates();
             if (_config.ShowHardwareStats)
             {
-                _statsOverlay.Show();
-                _statsOverlay.UpdateDockPosition(force: true);
+                _statsOverlay.CheckVisibilityAndRender();
             }
             else
             {
@@ -153,7 +152,7 @@ public class TrayIconManager : IDisposable
             }
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.RenderLayeredWindow();
+            _statsOverlay.CheckVisibilityAndRender();
         });
 
         _itemStatsUpload = new ToolStripMenuItem("Show Upload Speed", null, (s, e) =>
@@ -165,7 +164,7 @@ public class TrayIconManager : IDisposable
             }
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.RenderLayeredWindow();
+            _statsOverlay.CheckVisibilityAndRender();
         });
 
         _itemStatsNetArrows = new ToolStripMenuItem("Show Direction Arrows (▲ / ▼)", null, (s, e) =>
@@ -173,7 +172,7 @@ public class TrayIconManager : IDisposable
             _config.ShowNetArrows = !_config.ShowNetArrows;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.RenderLayeredWindow();
+            _statsOverlay.CheckVisibilityAndRender();
         });
 
         _itemStatsCpu = new ToolStripMenuItem("Show CPU Usage", null, (s, e) =>
@@ -181,7 +180,7 @@ public class TrayIconManager : IDisposable
             _config.ShowCpu = !_config.ShowCpu;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.RenderLayeredWindow();
+            _statsOverlay.CheckVisibilityAndRender();
         });
 
         _itemStatsRam = new ToolStripMenuItem("Show RAM Usage", null, (s, e) =>
@@ -189,7 +188,7 @@ public class TrayIconManager : IDisposable
             _config.ShowRam = !_config.ShowRam;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.RenderLayeredWindow();
+            _statsOverlay.CheckVisibilityAndRender();
         });
 
         _itemStatsGpu = new ToolStripMenuItem("Show GPU Usage", null, (s, e) =>
@@ -197,7 +196,7 @@ public class TrayIconManager : IDisposable
             _config.ShowGpu = !_config.ShowGpu;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.RenderLayeredWindow();
+            _statsOverlay.CheckVisibilityAndRender();
         });
 
         _itemStatsClickThrough = new ToolStripMenuItem("Click-Through Mode", null, (s, e) =>
@@ -257,7 +256,7 @@ public class TrayIconManager : IDisposable
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
             if (_config.ShowHardwareStats)
             {
-                _statsOverlay.UpdateDockPosition(force: true);
+                _statsOverlay.CheckVisibilityAndRender();
             }
         });
 

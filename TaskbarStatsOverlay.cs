@@ -47,9 +47,28 @@ public class TaskbarStatsOverlay : Form
         public byte AlphaFormat;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
     private const byte AC_SRC_OVER = 0x00;
     private const byte AC_SRC_ALPHA = 0x01;
     private const uint ULW_ALPHA = 0x02;
+
+    private const int SW_HIDE = 0;
+    private const int SW_SHOWNOACTIVATE = 4;
+    private const uint MONITOR_DEFAULTTONEAREST = 2;
+    private const int DWMWA_CLOAKED = 14;
+    private const int GWLP_HWNDPARENT = -8;
+
+    private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+    private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
 
     [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
     private static extern bool UpdateLayeredWindow(
@@ -92,6 +111,58 @@ public class TaskbarStatsOverlay : Form
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongW", SetLastError = true)]
+    private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int dwNewLong);
+
+    private static IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
+    {
+        if (IntPtr.Size == 8)
+            return SetWindowLongPtr64(hWnd, nIndex, dwNewLong);
+        return new IntPtr(SetWindowLong32(hWnd, nIndex, dwNewLong.ToInt32()));
+    }
+
+    private delegate void WinEventDelegate(IntPtr hWinEventHook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint dwEventThread, uint dwmsEventTime);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetWinEventHook(
+        uint eventMin,
+        uint eventMax,
+        IntPtr hmodWinEventProc,
+        WinEventDelegate lpfnWinEventProc,
+        uint idProcess,
+        uint idThread,
+        uint dwFlags
+    );
+
+    [DllImport("user32.dll")]
+    private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+    private readonly WinEventDelegate _winEventProc;
+    private IntPtr _hWinEventHook = IntPtr.Zero;
+
     private readonly AppConfig _config;
     private readonly HardwareMonitor _monitor;
     private readonly ContextMenuStrip _contextMenu;
@@ -115,6 +186,7 @@ public class TaskbarStatsOverlay : Form
         FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces
     };
 
+    private bool _isHiddenByFullscreen;
     private const int OVERLAY_HEIGHT = 26;
 
     public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, ContextMenuStrip contextMenu)
@@ -126,13 +198,38 @@ public class TaskbarStatsOverlay : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        TopMost = true;
+
+        // Owned by Shell_TrayWnd rather than global TopMost, ensuring it hides behind fullscreen apps
+        TopMost = false;
 
         // Clean typography matching Windows 11 system tray clock font size exactly (9pt Segoe UI Variable)
         _fontRegular = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
         _fontBold = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
 
         Size = new Size(200, OVERLAY_HEIGHT);
+
+        // Foreground window event hook: instantly hide/unhide when apps enter or exit fullscreen
+        _winEventProc = (hHook, evt, hwnd, idObj, idChild, thread, time) =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                try
+                {
+                    BeginInvoke(new Action(CheckVisibilityAndRender));
+                }
+                catch { }
+            }
+        };
+
+        _hWinEventHook = SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            IntPtr.Zero,
+            _winEventProc,
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
+        );
 
         _monitor.StatsUpdated += stats =>
         {
@@ -141,22 +238,7 @@ public class TaskbarStatsOverlay : Form
             {
                 try
                 {
-                    BeginInvoke(new Action(() =>
-                    {
-                        try
-                        {
-                            RenderLayeredWindow();
-                            UpdateDockPosition();
-                        }
-                        catch (Exception ex)
-                        {
-                            try
-                            {
-                                System.IO.File.WriteAllText(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), ex.ToString());
-                            }
-                            catch { }
-                        }
-                    }));
+                    BeginInvoke(new Action(CheckVisibilityAndRender));
                 }
                 catch { }
             }
@@ -224,7 +306,24 @@ public class TaskbarStatsOverlay : Form
                 cp.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT (Click through to taskbar)
             }
 
+            // Bind ownership directly to the Windows taskbar window
+            IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+            if (hTray != IntPtr.Zero)
+            {
+                cp.Parent = hTray;
+            }
+
             return cp;
+        }
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+        if (hTray != IntPtr.Zero)
+        {
+            SetWindowLongPtr(Handle, GWLP_HWNDPARENT, hTray);
         }
     }
 
@@ -235,15 +334,149 @@ public class TaskbarStatsOverlay : Form
         if (IsHandleCreated)
         {
             RecreateHandle();
-            RenderLayeredWindow();
+            CheckVisibilityAndRender();
         }
     }
 
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        RenderLayeredWindow();
+        CheckVisibilityAndRender();
         UpdateDockPosition(force: true);
+    }
+
+    public void CheckVisibilityAndRender()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+
+        // 1. If stats overlay is disabled in settings, ensure hidden
+        if (!_config.ShowHardwareStats)
+        {
+            if (IsWindowVisible(Handle))
+            {
+                ShowWindow(Handle, SW_HIDE);
+            }
+            return;
+        }
+
+        // 2. Check if primary taskbar is active and visible
+        IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+        if (hTray == IntPtr.Zero || !IsWindowVisible(hTray))
+        {
+            if (IsWindowVisible(Handle))
+            {
+                ShowWindow(Handle, SW_HIDE);
+            }
+            return;
+        }
+
+        if (GetWindowRect(hTray, out RECT trayRect))
+        {
+            if (trayRect.Height <= 0)
+            {
+                if (IsWindowVisible(Handle))
+                {
+                    ShowWindow(Handle, SW_HIDE);
+                }
+                return;
+            }
+        }
+
+        // 3. Fullscreen check: hide when a fullscreen app/game is active on the same monitor
+        bool isFullscreen = IsFullscreenWindowActive();
+        if (isFullscreen)
+        {
+            if (IsWindowVisible(Handle))
+            {
+                _isHiddenByFullscreen = true;
+                ShowWindow(Handle, SW_HIDE);
+            }
+            return;
+        }
+
+        // 4. Restore visibility if coming back from fullscreen
+        if (_isHiddenByFullscreen || !IsWindowVisible(Handle))
+        {
+            _isHiddenByFullscreen = false;
+            ShowWindow(Handle, SW_SHOWNOACTIVATE);
+            UpdateDockPosition(force: true);
+        }
+
+        UpdateDockPosition();
+        RenderLayeredWindow();
+    }
+
+    private bool IsFullscreenWindowActive()
+    {
+        try
+        {
+            IntPtr hForeground = GetForegroundWindow();
+            if (hForeground == IntPtr.Zero || hForeground == Handle)
+            {
+                return false;
+            }
+
+            // Exclude taskbars and desktop shell surfaces
+            IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+            if (hForeground == hTray)
+            {
+                return false;
+            }
+
+            IntPtr hSecondaryTray = FindWindow("Shell_SecondaryTrayWnd", null);
+            if (hForeground == hSecondaryTray)
+            {
+                return false;
+            }
+
+            IntPtr hProgman = FindWindow("Progman", null);
+            IntPtr hWorkerW = FindWindow("WorkerW", null);
+            if (hForeground == hProgman || hForeground == hWorkerW)
+            {
+                return false;
+            }
+
+            if (!IsWindowVisible(hForeground))
+            {
+                return false;
+            }
+
+            // Exclude cloaked background UWP processes
+            if (DwmGetWindowAttribute(hForeground, DWMWA_CLOAKED, out int cloaked, sizeof(int)) == 0 && cloaked != 0)
+            {
+                return false;
+            }
+
+            // Only hide if the fullscreen window is on the SAME monitor as the overlay
+            IntPtr hMonFg = MonitorFromWindow(hForeground, MONITOR_DEFAULTTONEAREST);
+            IntPtr hMonOverlay = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
+
+            if (hMonFg == IntPtr.Zero || hMonFg != hMonOverlay)
+            {
+                return false;
+            }
+
+            MONITORINFO mi = new() { cbSize = Marshal.SizeOf<MONITORINFO>() };
+            if (!GetMonitorInfo(hMonFg, ref mi))
+            {
+                return false;
+            }
+
+            if (GetWindowRect(hForeground, out RECT rcFg))
+            {
+                // Fullscreen window covers the entire monitor rect
+                if (rcFg.Left <= mi.rcMonitor.Left &&
+                    rcFg.Top <= mi.rcMonitor.Top &&
+                    rcFg.Right >= mi.rcMonitor.Right &&
+                    rcFg.Bottom >= mi.rcMonitor.Bottom)
+                {
+                    return true;
+                }
+            }
+        }
+        catch { }
+
+        return false;
     }
 
     public void UpdateDockPosition(bool force = false)
@@ -289,7 +522,7 @@ public class TaskbarStatsOverlay : Form
         _config.StatsCustomY = null;
         _config.Save();
         UpdateDockPosition(force: true);
-        RenderLayeredWindow();
+        CheckVisibilityAndRender();
     }
 
     public void RenderLayeredWindow()
@@ -536,6 +769,12 @@ public class TaskbarStatsOverlay : Form
     {
         if (disposing)
         {
+            if (_hWinEventHook != IntPtr.Zero)
+            {
+                UnhookWinEvent(_hWinEventHook);
+                _hWinEventHook = IntPtr.Zero;
+            }
+
             _fontRegular?.Dispose();
             _fontBold?.Dispose();
             _brushVal?.Dispose();
