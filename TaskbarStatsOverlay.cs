@@ -128,9 +128,9 @@ public class TaskbarStatsOverlay : Form
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
 
-        // Clean typography matching Windows 11 system tray font size
-        _fontRegular = TryCreateFont("Segoe UI Variable Text", 8.5f, FontStyle.Regular);
-        _fontBold = TryCreateFont("Segoe UI Variable Text", 8.5f, FontStyle.Bold);
+        // Clean typography matching Windows 11 system tray clock font size exactly (9pt Segoe UI Variable)
+        _fontRegular = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
+        _fontBold = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
 
         Size = new Size(200, OVERLAY_HEIGHT);
 
@@ -188,15 +188,25 @@ public class TaskbarStatsOverlay : Form
         };
     }
 
-    private static Font TryCreateFont(string familyName, float size, FontStyle style)
+    private static Font TryCreateFont(string familyName, float defaultSize, FontStyle style)
     {
+        float size = defaultSize;
         try
         {
-            return new Font(familyName, size, style);
+            if (SystemFonts.MenuFont != null && SystemFonts.MenuFont.SizeInPoints > 0)
+            {
+                size = SystemFonts.MenuFont.SizeInPoints;
+            }
+        }
+        catch { }
+
+        try
+        {
+            return new Font(familyName, size, style, GraphicsUnit.Point);
         }
         catch
         {
-            return new Font("Segoe UI", size, style);
+            return new Font("Segoe UI", size, style, GraphicsUnit.Point);
         }
     }
 
