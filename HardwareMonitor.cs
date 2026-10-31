@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.NetworkInformation;
@@ -60,7 +61,8 @@ public class HardwareMonitor : IDisposable
     private long _prevBytesSent;
     private bool _isFirstSample = true;
 
-    private PerformanceCounter? _gpuCounter;
+    private readonly List<PerformanceCounter> _gpuCounters = new();
+    private DateTime _lastGpuCountersRefresh = DateTime.MinValue;
     private bool _gpuCounterFailed;
 
     public HardwareStats CurrentStats { get; private set; }
@@ -83,7 +85,7 @@ public class HardwareMonitor : IDisposable
         _prevNetCheckTime = DateTime.UtcNow;
 
         // Poll every 1000ms
-        _timer = new System.Threading.Timer(OnTick, null, 1000, 1000);
+        _timer = new System.Threading.Timer(OnTick, null, 500, 1000);
     }
 
     private void OnTick(object? state)
@@ -152,7 +154,7 @@ public class HardwareMonitor : IDisposable
             _prevBytesSent = currentBytesSent;
             _prevNetCheckTime = now;
 
-            // 4. GPU Measurement (Optional, only if enabled)
+            // 4. GPU Measurement (Multi-instance 3D engine aggregator)
             int gpuPercent = 0;
             if (_config.ShowGpu)
             {
@@ -203,28 +205,47 @@ public class HardwareMonitor : IDisposable
 
         try
         {
-            if (_gpuCounter == null)
+            // Refresh 3D engine instances every 15 seconds to pick up newly started games/apps
+            if ((DateTime.UtcNow - _lastGpuCountersRefresh).TotalSeconds > 15 || _gpuCounters.Count == 0)
             {
+                foreach (var c in _gpuCounters) { try { c.Dispose(); } catch { } }
+                _gpuCounters.Clear();
+
                 var category = new PerformanceCounterCategory("GPU Engine");
                 var instanceNames = category.GetInstanceNames();
                 foreach (var name in instanceNames)
                 {
                     if (name.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase))
                     {
-                        _gpuCounter = new PerformanceCounter("GPU Engine", "Utilization Percentage", name, true);
-                        break;
+                        try
+                        {
+                            var counter = new PerformanceCounter("GPU Engine", "Utilization Percentage", name, true);
+                            counter.NextValue(); // Prime first sample
+                            _gpuCounters.Add(counter);
+                        }
+                        catch { }
                     }
                 }
+                _lastGpuCountersRefresh = DateTime.UtcNow;
+            }
 
-                if (_gpuCounter == null)
+            // Sum current utilization across all active 3D engines
+            double total = 0;
+            for (int i = _gpuCounters.Count - 1; i >= 0; i--)
+            {
+                try
                 {
-                    _gpuCounterFailed = true;
-                    return 0;
+                    float val = _gpuCounters[i].NextValue();
+                    if (val > 0) total += val;
+                }
+                catch
+                {
+                    try { _gpuCounters[i].Dispose(); } catch { }
+                    _gpuCounters.RemoveAt(i);
                 }
             }
 
-            float val = _gpuCounter.NextValue();
-            return (int)Math.Clamp(Math.Round(val), 0, 100);
+            return (int)Math.Clamp(Math.Round(total), 0, 100);
         }
         catch
         {
@@ -259,7 +280,10 @@ public class HardwareMonitor : IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
-        _gpuCounter?.Dispose();
+        foreach (var c in _gpuCounters)
+        {
+            try { c.Dispose(); } catch { }
+        }
+        _gpuCounters.Clear();
     }
 }
-

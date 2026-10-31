@@ -104,8 +104,7 @@ public class TaskbarStatsOverlay : Form
     private readonly Font _fontRegular;
     private readonly Font _fontBold;
 
-    private const int OVERLAY_WIDTH = 156;
-    private const int OVERLAY_HEIGHT = 34;
+    private const int OVERLAY_HEIGHT = 26;
 
     public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, ContextMenuStrip contextMenu)
     {
@@ -117,11 +116,12 @@ public class TaskbarStatsOverlay : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
-        Size = new Size(OVERLAY_WIDTH, OVERLAY_HEIGHT);
 
-        // Modern fonts matching Windows 11 Fluent typography
-        _fontRegular = TryCreateFont("Segoe UI Variable Text", 8.0f, FontStyle.Regular);
-        _fontBold = TryCreateFont("Segoe UI Variable Text", 8.0f, FontStyle.Bold);
+        // Modern Fluent typography - 8.5pt matches the Windows 11 clock and tray font size
+        _fontRegular = TryCreateFont("Segoe UI Variable Text", 8.5f, FontStyle.Regular);
+        _fontBold = TryCreateFont("Segoe UI Variable Text", 8.5f, FontStyle.Bold);
+
+        Size = new Size(320, OVERLAY_HEIGHT);
 
         _monitor.StatsUpdated += stats =>
         {
@@ -132,8 +132,8 @@ public class TaskbarStatsOverlay : Form
                 {
                     BeginInvoke(new Action(() =>
                     {
-                        UpdateDockPosition();
                         RenderLayeredWindow();
+                        UpdateDockPosition();
                     }));
                 }
                 catch { }
@@ -210,8 +210,8 @@ public class TaskbarStatsOverlay : Form
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        UpdateDockPosition(force: true);
         RenderLayeredWindow();
+        UpdateDockPosition(force: true);
     }
 
     public void UpdateDockPosition(bool force = false)
@@ -235,12 +235,12 @@ public class TaskbarStatsOverlay : Form
 
             if (hNotify != IntPtr.Zero && GetWindowRect(hNotify, out RECT notifyRect))
             {
-                targetX = notifyRect.Left - Width - 10;
+                targetX = notifyRect.Left - Width - 12;
                 targetY = trayRect.Top + (trayRect.Height - Height) / 2;
             }
             else
             {
-                targetX = trayRect.Right - Width - 120;
+                targetX = trayRect.Right - Width - 140;
                 targetY = trayRect.Top + (trayRect.Height - Height) / 2;
             }
 
@@ -264,128 +264,125 @@ public class TaskbarStatsOverlay : Form
     {
         if (!IsHandleCreated || IsDisposed) return;
 
-        int w = Width;
-        int h = Height;
-        if (w <= 0 || h <= 0) return;
+        // Formatted strings
+        string uploadStr = HardwareMonitor.FormatSpeed(_latestStats.UploadSpeedBps);
+        string downloadStr = HardwareMonitor.FormatSpeed(_latestStats.DownloadSpeedBps);
+        string cpuStr = $"{_latestStats.CpuPercent}%";
+        string ramStr = $"{_latestStats.RamPercent}%";
+        string gpuStr = $"{_latestStats.GpuPercent}%";
 
+        // Modern Windows 11 high-contrast palette
+        Color colNetUp = Color.FromArgb(255, 185, 80);       // Warm amber/orange
+        Color colNetDown = Color.FromArgb(0, 225, 255);      // Clean crisp cyan
+        Color colLabel = Color.FromArgb(175, 180, 190);     // Soft silver-gray (matches Windows 11 system font)
+        Color colVal = Color.FromArgb(255, 255, 255);       // Pure crisp white
+        Color colDivider = Color.FromArgb(60, 255, 255, 255); // Subtle translucent divider
+
+        // 1. Measure all components to dynamically fit width
+        int currentX = 0;
+        int rowY = 4;
+        int h = OVERLAY_HEIGHT;
+
+        // Temporary graphics to measure
+        int neededWidth = 0;
+        using (var measureBmp = new Bitmap(1, 1))
+        using (var gMeasure = Graphics.FromImage(measureBmp))
+        {
+            if (_config.ShowNetSpeed)
+            {
+                neededWidth += TextRenderer.MeasureText(gMeasure, "▲ " + uploadStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
+                neededWidth += TextRenderer.MeasureText(gMeasure, "▼ " + downloadStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 12;
+                neededWidth += 12; // divider spacing
+            }
+
+            if (_config.ShowCpu)
+            {
+                neededWidth += TextRenderer.MeasureText(gMeasure, "CPU " + cpuStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
+            }
+
+            if (_config.ShowRam)
+            {
+                neededWidth += TextRenderer.MeasureText(gMeasure, "RAM " + ramStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
+            }
+
+            if (_config.ShowGpu)
+            {
+                neededWidth += TextRenderer.MeasureText(gMeasure, "GPU " + gpuStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 6;
+            }
+        }
+
+        neededWidth = Math.Max(neededWidth + 4, 100);
+        if (Width != neededWidth)
+        {
+            Width = neededWidth;
+        }
+
+        int w = Width;
+
+        // 2. Render to 32-bit ARGB bitmap (100% transparent background - ZERO pink, ZERO black tint)
         using var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-            // Draw clean frosted dark pill container (Zero pink, true alpha blending)
-            var rect = new Rectangle(0, 0, w - 1, h - 1);
-            using (var path = GetRoundedRectPath(rect, 6))
-            {
-                // Fluent dark translucent background (Alpha 175 = ~68% opacity)
-                using (var bgBrush = new SolidBrush(Color.FromArgb(175, 18, 18, 22)))
-                {
-                    g.FillPath(bgBrush, path);
-                }
+            // Completely transparent background - NO background box, NO pill, NO tint!
+            g.Clear(Color.Transparent);
 
-                // Subtle modern border (Alpha 35 = ~14% subtle white outline)
-                using (var borderPen = new Pen(Color.FromArgb(45, 255, 255, 255), 1f))
-                {
-                    g.DrawPath(borderPen, path);
-                }
-            }
+            currentX = 2;
 
-            // Draw subtle vertical column divider
-            using (var divPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1f))
-            {
-                g.DrawLine(divPen, 76, 5, 76, h - 6);
-            }
-
-            // Formatted values
-            string uploadStr = HardwareMonitor.FormatSpeed(_latestStats.UploadSpeedBps);
-            string downloadStr = HardwareMonitor.FormatSpeed(_latestStats.DownloadSpeedBps);
-            string cpuStr = $"{_latestStats.CpuPercent}%";
-            string ramStr = $"{_latestStats.RamPercent}%";
-
-            // Palette
-            Color colNetUp = Color.FromArgb(255, 175, 75);      // Warm glowing amber
-            Color colNetDown = Color.FromArgb(0, 215, 255);     // Crisp vivid cyan
-            Color colLabel = Color.FromArgb(175, 180, 190);    // Clean Fluent muted gray
-            Color colVal = Color.FromArgb(250, 250, 250);      // High-contrast clean white
-
-            // Row vertical centers
-            int row1Y = 2;
-            int row2Y = 17;
-
-            // ========================================================
-            // COLUMN 1: Network Activity (X: 6 to 72)
-            // ========================================================
+            // --- Network Speed: ▲ Upload ▼ Download ---
             if (_config.ShowNetSpeed)
             {
-                // Upload row
-                TextRenderer.DrawText(g, "▲", _fontBold, new Point(6, row1Y), colNetUp, TextFormatFlags.NoPadding);
-                TextRenderer.DrawText(
-                    g,
-                    uploadStr,
-                    _fontRegular,
-                    new Rectangle(18, row1Y, 54, 14),
-                    colVal,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-                );
+                // Upload ▲
+                TextRenderer.DrawText(g, "▲", _fontBold, new Point(currentX, rowY), colNetUp, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, "▲ ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
 
-                // Download row
-                TextRenderer.DrawText(g, "▼", _fontBold, new Point(6, row2Y), colNetDown, TextFormatFlags.NoPadding);
-                TextRenderer.DrawText(
-                    g,
-                    downloadStr,
-                    _fontRegular,
-                    new Rectangle(18, row2Y, 54, 14),
-                    colVal,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-                );
+                TextRenderer.DrawText(g, uploadStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, uploadStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
+
+                // Download ▼
+                TextRenderer.DrawText(g, "▼", _fontBold, new Point(currentX, rowY), colNetDown, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, "▼ ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
+
+                TextRenderer.DrawText(g, downloadStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, downloadStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
+
+                // Subtle vertical divider line
+                using (var pen = new Pen(colDivider, 1f))
+                {
+                    g.DrawLine(pen, currentX, rowY + 2, currentX, rowY + 14);
+                }
+                currentX += 12;
             }
 
-            // ========================================================
-            // COLUMN 2: System Usage (X: 82 to 148)
-            // ========================================================
-            int col2LabelX = 82;
-            int col2ValRectX = 106;
-            int col2ValWidth = 43;
-
-            // Row 1: CPU
+            // --- CPU Usage ---
             if (_config.ShowCpu)
             {
-                TextRenderer.DrawText(g, "CPU", _fontBold, new Point(col2LabelX, row1Y), colLabel, TextFormatFlags.NoPadding);
-                TextRenderer.DrawText(
-                    g,
-                    cpuStr,
-                    _fontRegular,
-                    new Rectangle(col2ValRectX, row1Y, col2ValWidth, 14),
-                    colVal,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-                );
+                TextRenderer.DrawText(g, "CPU", _fontBold, new Point(currentX, rowY), colLabel, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, "CPU ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
+
+                TextRenderer.DrawText(g, cpuStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, cpuStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
             }
 
-            // Row 2: RAM (or GPU)
-            if (_config.ShowGpu && _latestStats.GpuPercent > 0)
+            // --- RAM Usage ---
+            if (_config.ShowRam)
             {
-                TextRenderer.DrawText(g, "GPU", _fontBold, new Point(col2LabelX, row2Y), colLabel, TextFormatFlags.NoPadding);
-                TextRenderer.DrawText(
-                    g,
-                    $"{_latestStats.GpuPercent}%",
-                    _fontRegular,
-                    new Rectangle(col2ValRectX, row2Y, col2ValWidth, 14),
-                    colVal,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-                );
+                TextRenderer.DrawText(g, "RAM", _fontBold, new Point(currentX, rowY), colLabel, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, "RAM ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
+
+                TextRenderer.DrawText(g, ramStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, ramStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
             }
-            else if (_config.ShowRam)
+
+            // --- GPU Usage ---
+            if (_config.ShowGpu)
             {
-                TextRenderer.DrawText(g, "RAM", _fontBold, new Point(col2LabelX, row2Y), colLabel, TextFormatFlags.NoPadding);
-                TextRenderer.DrawText(
-                    g,
-                    ramStr,
-                    _fontRegular,
-                    new Rectangle(col2ValRectX, row2Y, col2ValWidth, 14),
-                    colVal,
-                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
-                );
+                TextRenderer.DrawText(g, "GPU", _fontBold, new Point(currentX, rowY), colLabel, TextFormatFlags.NoPadding);
+                currentX += TextRenderer.MeasureText(g, "GPU ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
+
+                TextRenderer.DrawText(g, gpuStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
             }
         }
 
@@ -427,24 +424,6 @@ public class TaskbarStatsOverlay : Form
             DeleteDC(memDc);
             ReleaseDC(IntPtr.Zero, screenDc);
         }
-    }
-
-    private static GraphicsPath GetRoundedRectPath(Rectangle rect, int radius)
-    {
-        var path = new GraphicsPath();
-        int diameter = radius * 2;
-        var arc = new Rectangle(rect.Location, new Size(diameter, diameter));
-
-        path.AddArc(arc, 180, 90);
-        arc.X = rect.Right - diameter;
-        path.AddArc(arc, 270, 90);
-        arc.Y = rect.Bottom - diameter;
-        path.AddArc(arc, 0, 90);
-        arc.X = rect.Left;
-        path.AddArc(arc, 90, 90);
-
-        path.CloseFigure();
-        return path;
     }
 
     private void OnMouseDown(object? sender, MouseEventArgs e)

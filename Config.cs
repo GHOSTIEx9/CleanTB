@@ -25,7 +25,7 @@ public class AppConfig
     public bool ShowNetSpeed { get; set; } = true;
     public bool ShowCpu { get; set; } = true;
     public bool ShowRam { get; set; } = true;
-    public bool ShowGpu { get; set; } = false;
+    public bool ShowGpu { get; set; } = true;
     public bool StatsClickThrough { get; set; } = false;
     public int? StatsCustomX { get; set; } = null;
     public int? StatsCustomY { get; set; } = null;
