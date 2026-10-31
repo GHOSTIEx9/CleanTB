@@ -199,8 +199,8 @@ public class TaskbarStatsOverlay : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
 
-        // Owned by Shell_TrayWnd rather than global TopMost, ensuring it hides behind fullscreen apps
-        TopMost = false;
+        // TopMost ensures the stats float on the taskbar over normal desktop windows
+        TopMost = true;
 
         // Clean typography matching Windows 11 system tray clock font size exactly (9pt Segoe UI Variable)
         _fontRegular = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
@@ -306,13 +306,6 @@ public class TaskbarStatsOverlay : Form
                 cp.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT (Click through to taskbar)
             }
 
-            // Bind ownership directly to the Windows taskbar window
-            IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-            if (hTray != IntPtr.Zero)
-            {
-                cp.Parent = hTray;
-            }
-
             return cp;
         }
     }
@@ -320,11 +313,6 @@ public class TaskbarStatsOverlay : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-        if (hTray != IntPtr.Zero)
-        {
-            SetWindowLongPtr(Handle, GWLP_HWNDPARENT, hTray);
-        }
     }
 
     public void SetClickThrough(bool clickThrough)
@@ -341,43 +329,52 @@ public class TaskbarStatsOverlay : Form
     protected override void OnLoad(EventArgs e)
     {
         base.OnLoad(e);
-        CheckVisibilityAndRender();
         UpdateDockPosition(force: true);
+        CheckVisibilityAndRender();
     }
 
     public void CheckVisibilityAndRender()
     {
-        if (!IsHandleCreated || IsDisposed) return;
+        if (IsDisposed) return;
+
+        if (!IsHandleCreated)
+        {
+            if (_config.ShowHardwareStats)
+            {
+                Show();
+            }
+            return;
+        }
 
         // 1. If stats overlay is disabled in settings, ensure hidden
         if (!_config.ShowHardwareStats)
         {
-            if (IsWindowVisible(Handle))
+            if (Visible)
             {
                 ShowWindow(Handle, SW_HIDE);
             }
             return;
         }
 
-        // 2. Check if primary taskbar is active and visible
-        IntPtr hTray = FindWindow("Shell_TrayWnd", null);
-        if (hTray == IntPtr.Zero || !IsWindowVisible(hTray))
+        // 2. Fullscreen check: hide when a fullscreen app/game is active on the same monitor
+        bool isFullscreen = IsFullscreenWindowActive();
+        if (isFullscreen)
         {
-            if (IsWindowVisible(Handle))
+            if (Visible)
             {
+                _isHiddenByFullscreen = true;
                 ShowWindow(Handle, SW_HIDE);
             }
             return;
         }
 
-        if (GetWindowRect(hTray, out RECT trayRect))
+        // 3. Check if primary taskbar is active and not auto-hidden off screen
+        IntPtr hTray = FindWindow("Shell_TrayWnd", null);
+        if (hTray != IntPtr.Zero && GetWindowRect(hTray, out RECT trayRect))
         {
             if (trayRect.Height <= 4)
             {
-                if (IsWindowVisible(Handle))
-                {
-                    ShowWindow(Handle, SW_HIDE);
-                }
+                if (Visible) ShowWindow(Handle, SW_HIDE);
                 return;
             }
 
@@ -388,29 +385,14 @@ public class TaskbarStatsOverlay : Form
                 // Auto-hidden taskbar slides off screen, leaving only <= 4px peeking
                 if (trayRect.Top >= mi.rcMonitor.Bottom - 4 || trayRect.Bottom <= mi.rcMonitor.Top + 4)
                 {
-                    if (IsWindowVisible(Handle))
-                    {
-                        ShowWindow(Handle, SW_HIDE);
-                    }
+                    if (Visible) ShowWindow(Handle, SW_HIDE);
                     return;
                 }
             }
         }
 
-        // 3. Fullscreen check: hide when a fullscreen app/game is active on the same monitor
-        bool isFullscreen = IsFullscreenWindowActive();
-        if (isFullscreen)
-        {
-            if (IsWindowVisible(Handle))
-            {
-                _isHiddenByFullscreen = true;
-                ShowWindow(Handle, SW_HIDE);
-            }
-            return;
-        }
-
-        // 4. Restore visibility if coming back from fullscreen
-        if (_isHiddenByFullscreen || !IsWindowVisible(Handle))
+        // 4. Restore visibility if coming back from fullscreen or hidden
+        if (_isHiddenByFullscreen || !Visible)
         {
             _isHiddenByFullscreen = false;
             ShowWindow(Handle, SW_SHOWNOACTIVATE);
@@ -479,11 +461,11 @@ public class TaskbarStatsOverlay : Form
 
             if (GetWindowRect(hForeground, out RECT rcFg))
             {
-                // Fullscreen window covers the entire monitor rect (with 2px tolerance for borderless margins)
-                if (rcFg.Left <= mi.rcMonitor.Left + 2 &&
-                    rcFg.Top <= mi.rcMonitor.Top + 2 &&
-                    rcFg.Right >= mi.rcMonitor.Right - 2 &&
-                    rcFg.Bottom >= mi.rcMonitor.Bottom - 2)
+                // Fullscreen window covers the entire monitor rect
+                if (rcFg.Left <= mi.rcMonitor.Left &&
+                    rcFg.Top <= mi.rcMonitor.Top &&
+                    rcFg.Right >= mi.rcMonitor.Right &&
+                    rcFg.Bottom >= mi.rcMonitor.Bottom)
                 {
                     return true;
                 }

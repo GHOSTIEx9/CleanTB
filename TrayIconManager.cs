@@ -78,6 +78,7 @@ public class TrayIconManager : IDisposable
 
         if (_config.ShowHardwareStats)
         {
+            _statsOverlay.Show();
             _statsOverlay.CheckVisibilityAndRender();
         }
 
@@ -135,6 +136,7 @@ public class TrayIconManager : IDisposable
             UpdateMenuStates();
             if (_config.ShowHardwareStats)
             {
+                _statsOverlay.Show();
                 _statsOverlay.CheckVisibilityAndRender();
             }
             else
@@ -256,6 +258,7 @@ public class TrayIconManager : IDisposable
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
             if (_config.ShowHardwareStats)
             {
+                _statsOverlay.Show();
                 _statsOverlay.CheckVisibilityAndRender();
             }
         });
