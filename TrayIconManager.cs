@@ -14,8 +14,10 @@ public class TrayIconManager : IDisposable
     private readonly TaskbarController _controller;
     private readonly AppConfig _config;
     private readonly TaskbarMessageListener _listener;
+    private readonly HardwareMonitor _hardwareMonitor;
+    private readonly TaskbarStatsOverlay _statsOverlay;
 
-    // Menu items
+    // Menu items - Appearance
     private ToolStripMenuItem _itemHeader = null!;
     private ToolStripMenuItem _itemClear = null!;
     private ToolStripMenuItem _itemBlur = null!;
@@ -25,6 +27,16 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _itemNormal = null!;
     private ToolStripMenuItem _itemHideBorder = null!;
     private ToolStripMenuItem _itemStartup = null!;
+
+    // Menu items - Hardware Stats
+    private ToolStripMenuItem _menuHardwareStats = null!;
+    private ToolStripMenuItem _itemStatsEnable = null!;
+    private ToolStripMenuItem _itemStatsNet = null!;
+    private ToolStripMenuItem _itemStatsCpu = null!;
+    private ToolStripMenuItem _itemStatsRam = null!;
+    private ToolStripMenuItem _itemStatsGpu = null!;
+    private ToolStripMenuItem _itemStatsClickThrough = null!;
+    private ToolStripMenuItem _itemStatsResetPos = null!;
 
     public TrayIconManager(TaskbarController controller, AppConfig config)
     {
@@ -58,10 +70,23 @@ public class TrayIconManager : IDisposable
             }
         };
 
+        // Hardware Monitor & Taskbar Stats Overlay
+        _hardwareMonitor = new HardwareMonitor(_config);
+        _statsOverlay = new TaskbarStatsOverlay(_config, _hardwareMonitor, _contextMenu);
+
+        if (_config.ShowHardwareStats)
+        {
+            _statsOverlay.Show();
+        }
+
         // Window message listener for TaskbarCreated & DisplayChange
         _listener = new TaskbarMessageListener(() =>
         {
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+            if (_config.ShowHardwareStats && !_statsOverlay.IsDisposed)
+            {
+                _statsOverlay.UpdateDockPosition(force: true);
+            }
         });
 
         // Apply saved configuration on startup
@@ -98,6 +123,92 @@ public class TrayIconManager : IDisposable
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
+        // --- Hardware Stats Submenu ---
+        _menuHardwareStats = new ToolStripMenuItem("Taskbar Hardware Stats (CPU/RAM/NET)");
+
+        _itemStatsEnable = new ToolStripMenuItem("Show on Taskbar", null, (s, e) =>
+        {
+            _config.ShowHardwareStats = !_config.ShowHardwareStats;
+            _config.Save();
+            UpdateMenuStates();
+            if (_config.ShowHardwareStats)
+            {
+                _statsOverlay.Show();
+                _statsOverlay.UpdateDockPosition(force: true);
+            }
+            else
+            {
+                _statsOverlay.Hide();
+            }
+        });
+
+        _itemStatsNet = new ToolStripMenuItem("Show Network Speed (↑ / ↓)", null, (s, e) =>
+        {
+            _config.ShowNetSpeed = !_config.ShowNetSpeed;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.Invalidate();
+        });
+
+        _itemStatsCpu = new ToolStripMenuItem("Show CPU Usage", null, (s, e) =>
+        {
+            _config.ShowCpu = !_config.ShowCpu;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.Invalidate();
+        });
+
+        _itemStatsRam = new ToolStripMenuItem("Show RAM Usage", null, (s, e) =>
+        {
+            _config.ShowRam = !_config.ShowRam;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.Invalidate();
+        });
+
+        _itemStatsGpu = new ToolStripMenuItem("Show GPU Usage", null, (s, e) =>
+        {
+            _config.ShowGpu = !_config.ShowGpu;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.Invalidate();
+        });
+
+        _itemStatsClickThrough = new ToolStripMenuItem("Click-Through Mode", null, (s, e) =>
+        {
+            _config.StatsClickThrough = !_config.StatsClickThrough;
+            _config.Save();
+            UpdateMenuStates();
+            MessageBox.Show(
+                "Click-Through mode updated. Restart CleanTB or toggle stats to apply input changes.",
+                "CleanTB",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information
+            );
+        });
+
+        _itemStatsResetPos = new ToolStripMenuItem("Reset Dock Position", null, (s, e) =>
+        {
+            _statsOverlay.ResetPosition();
+        });
+
+        _menuHardwareStats.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _itemStatsEnable,
+            new ToolStripSeparator(),
+            _itemStatsNet,
+            _itemStatsCpu,
+            _itemStatsRam,
+            _itemStatsGpu,
+            new ToolStripSeparator(),
+            _itemStatsClickThrough,
+            _itemStatsResetPos
+        });
+
+        _contextMenu.Items.Add(_menuHardwareStats);
+
+        _contextMenu.Items.Add(new ToolStripSeparator());
+
         _itemHideBorder = new ToolStripMenuItem("Hide Top Border Line", null, (s, e) =>
         {
             _config.HideBorder = !_config.HideBorder;
@@ -122,16 +233,24 @@ public class TrayIconManager : IDisposable
         var itemRefresh = new ToolStripMenuItem("Refresh Taskbar", null, (s, e) =>
         {
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+            if (_config.ShowHardwareStats)
+            {
+                _statsOverlay.UpdateDockPosition(force: true);
+            }
         });
 
         var itemAbout = new ToolStripMenuItem("About CleanTB", null, (s, e) =>
         {
             MessageBox.Show(
-                "CleanTB - Ultra-lightweight, bloat-free Windows 11 Taskbar Transparency utility.\n\n" +
-                "• Memory: < 10 MB RAM\n" +
-                "• CPU: 0% at idle\n" +
-                "• No telemetry, no logs, no WinUI 3 overhead\n\n" +
-                "Left-click tray icon to toggle Clear / Default.",
+                "CleanTB - Ultra-lightweight, bloat-free Windows 11 Taskbar Customizer.\n\n" +
+                "• Memory: ~5 MB - 7 MB active RAM\n" +
+                "• CPU: < 0.1% usage\n" +
+                "• Real-time Taskbar CPU, RAM, & Network speed HUD\n" +
+                "• No telemetry, no logs, pure native Win32 APIs\n\n" +
+                "Tips:\n" +
+                "• Left-click tray icon to toggle Clear / Default.\n" +
+                "• Double-click the taskbar stats HUD to open Task Manager.\n" +
+                "• Drag the stats HUD to place it anywhere on screen.",
                 "About CleanTB",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information
@@ -141,6 +260,7 @@ public class TrayIconManager : IDisposable
         var itemExit = new ToolStripMenuItem("Exit CleanTB", null, (s, e) =>
         {
             _controller.RestoreDefault();
+            _statsOverlay.Hide();
             Application.Exit();
         });
 
@@ -166,6 +286,13 @@ public class TrayIconManager : IDisposable
         _itemTintDark.Checked = _config.Mode == TaskbarMode.TintedDark;
         _itemTintLight.Checked = _config.Mode == TaskbarMode.TintedLight;
         _itemNormal.Checked = _config.Mode == TaskbarMode.Normal;
+
+        _itemStatsEnable.Checked = _config.ShowHardwareStats;
+        _itemStatsNet.Checked = _config.ShowNetSpeed;
+        _itemStatsCpu.Checked = _config.ShowCpu;
+        _itemStatsRam.Checked = _config.ShowRam;
+        _itemStatsGpu.Checked = _config.ShowGpu;
+        _itemStatsClickThrough.Checked = _config.StatsClickThrough;
 
         _itemHideBorder.Checked = _config.HideBorder;
         _itemStartup.Checked = IsStartupEnabled();
@@ -210,28 +337,23 @@ public class TrayIconManager : IDisposable
             string icoPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "app.ico");
             if (System.IO.File.Exists(icoPath))
             {
-                // Load 32x32 crisp icon suitable for Windows system tray
                 return new Icon(icoPath, 32, 32);
             }
         }
         catch { }
 
-        // Fallback: Generate a crisp 32x32 icon with translucent taskbar dock
         using var bmp = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.Clear(Color.Transparent);
 
-            // Screen frame
             using var screenPen = new Pen(Color.FromArgb(180, 255, 255, 255), 1.5f);
             g.DrawRoundedRectangle(screenPen, 3, 3, 26, 26, 4, 4);
 
-            // Translucent taskbar dock at bottom
-            using var dockBrush = new SolidBrush(Color.FromArgb(160, 0, 162, 237)); // Clean cyan/azure
+            using var dockBrush = new SolidBrush(Color.FromArgb(160, 0, 162, 237));
             g.FillRoundedRectangle(dockBrush, 6, 21, 20, 5, 2, 2);
 
-            // Three taskbar icon dots
             using var dotBrush = new SolidBrush(Color.White);
             g.FillEllipse(dotBrush, 9, 22.5f, 2, 2);
             g.FillEllipse(dotBrush, 15, 22.5f, 2, 2);
@@ -244,6 +366,9 @@ public class TrayIconManager : IDisposable
 
     public void Dispose()
     {
+        _statsOverlay.Hide();
+        _statsOverlay.Dispose();
+        _hardwareMonitor.Dispose();
         _listener.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();

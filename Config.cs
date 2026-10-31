@@ -20,6 +20,16 @@ public class AppConfig
     public bool HideBorder { get; set; } = true;
     public bool RunAtStartup { get; set; } = false;
 
+    // Hardware Stats Display Settings
+    public bool ShowHardwareStats { get; set; } = true;
+    public bool ShowNetSpeed { get; set; } = true;
+    public bool ShowCpu { get; set; } = true;
+    public bool ShowRam { get; set; } = true;
+    public bool ShowGpu { get; set; } = false;
+    public bool StatsClickThrough { get; set; } = false;
+    public int? StatsCustomX { get; set; } = null;
+    public int? StatsCustomY { get; set; } = null;
+
     private static readonly string ConfigPath = Path.Combine(
         AppDomain.CurrentDomain.BaseDirectory,
         "config.json"
