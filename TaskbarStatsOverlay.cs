@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -21,6 +22,66 @@ public class TaskbarStatsOverlay : Form
         public int Height => Bottom - Top;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int x;
+        public int y;
+        public POINT(int x, int y) { this.x = x; this.y = y; }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SIZE
+    {
+        public int cx;
+        public int cy;
+        public SIZE(int cx, int cy) { this.cx = cx; this.cy = cy; }
+    }
+
+    [StructLayout(LayoutKind.Sequential, Pack = 1)]
+    private struct BLENDFUNCTION
+    {
+        public byte BlendOp;
+        public byte BlendFlags;
+        public byte SourceConstantAlpha;
+        public byte AlphaFormat;
+    }
+
+    private const byte AC_SRC_OVER = 0x00;
+    private const byte AC_SRC_ALPHA = 0x01;
+    private const uint ULW_ALPHA = 0x02;
+
+    [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern bool UpdateLayeredWindow(
+        IntPtr hwnd,
+        IntPtr hdcDst,
+        ref POINT pptDst,
+        ref SIZE psize,
+        IntPtr hdcSrc,
+        ref POINT pptSrc,
+        uint crKey,
+        [In] ref BLENDFUNCTION pblend,
+        uint dwFlags
+    );
+
+    [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr GetDC(IntPtr hWnd);
+
+    [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern IntPtr CreateCompatibleDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern bool DeleteDC(IntPtr hdc);
+
+    [DllImport("gdi32.dll", ExactSpelling = true)]
+    private static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+
+    [DllImport("gdi32.dll", ExactSpelling = true, SetLastError = true)]
+    private static extern bool DeleteObject(IntPtr hObject);
+
     [DllImport("user32.dll", EntryPoint = "FindWindowW", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr FindWindow(string lpClassName, string? lpWindowName);
 
@@ -30,13 +91,6 @@ public class TaskbarStatsOverlay : Form
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-    private static readonly IntPtr HWND_TOPMOST = new(-1);
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private const uint SWP_SHOWWINDOW = 0x0040;
 
     private readonly AppConfig _config;
     private readonly HardwareMonitor _monitor;
@@ -50,6 +104,9 @@ public class TaskbarStatsOverlay : Form
     private readonly Font _fontRegular;
     private readonly Font _fontBold;
 
+    private const int OVERLAY_WIDTH = 156;
+    private const int OVERLAY_HEIGHT = 34;
+
     public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, ContextMenuStrip contextMenu)
     {
         _config = config;
@@ -60,24 +117,9 @@ public class TaskbarStatsOverlay : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
+        Size = new Size(OVERLAY_WIDTH, OVERLAY_HEIGHT);
 
-        // Visual sizing for taskbar dock
-        Size = new Size(150, 36);
-
-        // Transparency setup
-        BackColor = Color.Magenta;
-        TransparencyKey = Color.Magenta;
-
-        SetStyle(
-            ControlStyles.AllPaintingInWmPaint |
-            ControlStyles.UserPaint |
-            ControlStyles.DoubleBuffer |
-            ControlStyles.SupportsTransparentBackColor |
-            ControlStyles.ResizeRedraw,
-            true
-        );
-
-        // Fonts matching Windows 11 Fluent typography
+        // Modern fonts matching Windows 11 Fluent typography
         _fontRegular = TryCreateFont("Segoe UI Variable Text", 8.0f, FontStyle.Regular);
         _fontBold = TryCreateFont("Segoe UI Variable Text", 8.0f, FontStyle.Bold);
 
@@ -91,20 +133,19 @@ public class TaskbarStatsOverlay : Form
                     BeginInvoke(new Action(() =>
                     {
                         UpdateDockPosition();
-                        Invalidate();
+                        RenderLayeredWindow();
                     }));
                 }
                 catch { }
             }
         };
 
-        // Wire mouse events
+        // Wire mouse interactions
         MouseDown += OnMouseDown;
         MouseMove += OnMouseMove;
         MouseUp += OnMouseUp;
         DoubleClick += (s, e) =>
         {
-            // Double-click opens Windows Task Manager
             try
             {
                 Process.Start(new ProcessStartInfo
@@ -142,12 +183,13 @@ public class TaskbarStatsOverlay : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
-            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
+            cp.ExStyle |= 0x00080000; // WS_EX_LAYERED (True per-pixel alpha rendering)
+            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW (Hidden from Alt+Tab)
+            cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE (Does not steal focus)
 
             if (_config?.StatsClickThrough == true)
             {
-                cp.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT
+                cp.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT (Clicks pass through)
             }
 
             return cp;
@@ -161,6 +203,7 @@ public class TaskbarStatsOverlay : Form
         if (IsHandleCreated)
         {
             RecreateHandle();
+            RenderLayeredWindow();
         }
     }
 
@@ -168,20 +211,19 @@ public class TaskbarStatsOverlay : Form
     {
         base.OnLoad(e);
         UpdateDockPosition(force: true);
+        RenderLayeredWindow();
     }
 
     public void UpdateDockPosition(bool force = false)
     {
         if (_isDragging && !force) return;
 
-        // Custom user positioning
         if (_config.StatsCustomX.HasValue && _config.StatsCustomY.HasValue)
         {
             Location = new Point(_config.StatsCustomX.Value, _config.StatsCustomY.Value);
             return;
         }
 
-        // Automatic docking next to Windows System Tray (TrayNotifyWnd)
         IntPtr hTray = FindWindow("Shell_TrayWnd", null);
         if (hTray == IntPtr.Zero) return;
 
@@ -193,20 +235,18 @@ public class TaskbarStatsOverlay : Form
 
             if (hNotify != IntPtr.Zero && GetWindowRect(hNotify, out RECT notifyRect))
             {
-                // Dock immediately to the left of the tray icons area
                 targetX = notifyRect.Left - Width - 10;
                 targetY = trayRect.Top + (trayRect.Height - Height) / 2;
             }
             else
             {
-                // Fallback: dock near bottom right
                 targetX = trayRect.Right - Width - 120;
                 targetY = trayRect.Top + (trayRect.Height - Height) / 2;
             }
 
             if (Location.X != targetX || Location.Y != targetY)
             {
-                SetWindowPos(Handle, HWND_TOPMOST, targetX, targetY, Width, Height, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                Location = new Point(targetX, targetY);
             }
         }
     }
@@ -217,77 +257,175 @@ public class TaskbarStatsOverlay : Form
         _config.StatsCustomY = null;
         _config.Save();
         UpdateDockPosition(force: true);
+        RenderLayeredWindow();
     }
 
-    protected override void OnPaint(PaintEventArgs e)
+    public void RenderLayeredWindow()
     {
-        Graphics g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        if (!IsHandleCreated || IsDisposed) return;
 
-        // Draw pill-shaped frosted background container
-        var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-        using (var path = GetRoundedRectPath(rect, 6))
+        int w = Width;
+        int h = Height;
+        if (w <= 0 || h <= 0) return;
+
+        using var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+        using (var g = Graphics.FromImage(bmp))
         {
-            // Subtle dark translucent fill
-            using (var brush = new SolidBrush(Color.FromArgb(170, 20, 20, 24)))
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+
+            // Draw clean frosted dark pill container (Zero pink, true alpha blending)
+            var rect = new Rectangle(0, 0, w - 1, h - 1);
+            using (var path = GetRoundedRectPath(rect, 6))
             {
-                g.FillPath(brush, path);
+                // Fluent dark translucent background (Alpha 175 = ~68% opacity)
+                using (var bgBrush = new SolidBrush(Color.FromArgb(175, 18, 18, 22)))
+                {
+                    g.FillPath(bgBrush, path);
+                }
+
+                // Subtle modern border (Alpha 35 = ~14% subtle white outline)
+                using (var borderPen = new Pen(Color.FromArgb(45, 255, 255, 255), 1f))
+                {
+                    g.DrawPath(borderPen, path);
+                }
             }
 
-            // Subtle border
-            using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255), 1f))
+            // Draw subtle vertical column divider
+            using (var divPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1f))
             {
-                g.DrawPath(pen, path);
+                g.DrawLine(divPen, 76, 5, 76, h - 6);
+            }
+
+            // Formatted values
+            string uploadStr = HardwareMonitor.FormatSpeed(_latestStats.UploadSpeedBps);
+            string downloadStr = HardwareMonitor.FormatSpeed(_latestStats.DownloadSpeedBps);
+            string cpuStr = $"{_latestStats.CpuPercent}%";
+            string ramStr = $"{_latestStats.RamPercent}%";
+
+            // Palette
+            Color colNetUp = Color.FromArgb(255, 175, 75);      // Warm glowing amber
+            Color colNetDown = Color.FromArgb(0, 215, 255);     // Crisp vivid cyan
+            Color colLabel = Color.FromArgb(175, 180, 190);    // Clean Fluent muted gray
+            Color colVal = Color.FromArgb(250, 250, 250);      // High-contrast clean white
+
+            // Row vertical centers
+            int row1Y = 2;
+            int row2Y = 17;
+
+            // ========================================================
+            // COLUMN 1: Network Activity (X: 6 to 72)
+            // ========================================================
+            if (_config.ShowNetSpeed)
+            {
+                // Upload row
+                TextRenderer.DrawText(g, "▲", _fontBold, new Point(6, row1Y), colNetUp, TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(
+                    g,
+                    uploadStr,
+                    _fontRegular,
+                    new Rectangle(18, row1Y, 54, 14),
+                    colVal,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                );
+
+                // Download row
+                TextRenderer.DrawText(g, "▼", _fontBold, new Point(6, row2Y), colNetDown, TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(
+                    g,
+                    downloadStr,
+                    _fontRegular,
+                    new Rectangle(18, row2Y, 54, 14),
+                    colVal,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                );
+            }
+
+            // ========================================================
+            // COLUMN 2: System Usage (X: 82 to 148)
+            // ========================================================
+            int col2LabelX = 82;
+            int col2ValRectX = 106;
+            int col2ValWidth = 43;
+
+            // Row 1: CPU
+            if (_config.ShowCpu)
+            {
+                TextRenderer.DrawText(g, "CPU", _fontBold, new Point(col2LabelX, row1Y), colLabel, TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(
+                    g,
+                    cpuStr,
+                    _fontRegular,
+                    new Rectangle(col2ValRectX, row1Y, col2ValWidth, 14),
+                    colVal,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                );
+            }
+
+            // Row 2: RAM (or GPU)
+            if (_config.ShowGpu && _latestStats.GpuPercent > 0)
+            {
+                TextRenderer.DrawText(g, "GPU", _fontBold, new Point(col2LabelX, row2Y), colLabel, TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(
+                    g,
+                    $"{_latestStats.GpuPercent}%",
+                    _fontRegular,
+                    new Rectangle(col2ValRectX, row2Y, col2ValWidth, 14),
+                    colVal,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                );
+            }
+            else if (_config.ShowRam)
+            {
+                TextRenderer.DrawText(g, "RAM", _fontBold, new Point(col2LabelX, row2Y), colLabel, TextFormatFlags.NoPadding);
+                TextRenderer.DrawText(
+                    g,
+                    ramStr,
+                    _fontRegular,
+                    new Rectangle(col2ValRectX, row2Y, col2ValWidth, 14),
+                    colVal,
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                );
             }
         }
 
-        // Metrics formatting
-        string uploadStr = HardwareMonitor.FormatSpeed(_latestStats.UploadSpeedBps);
-        string downloadStr = HardwareMonitor.FormatSpeed(_latestStats.DownloadSpeedBps);
-        string cpuStr = $"{_latestStats.CpuPercent}%";
-        string ramStr = $"{_latestStats.RamPercent}%";
+        // Apply true 32-bit ARGB bitmap to the layered window
+        IntPtr screenDc = GetDC(IntPtr.Zero);
+        IntPtr memDc = CreateCompatibleDC(screenDc);
+        IntPtr hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
+        IntPtr oldBitmap = SelectObject(memDc, hBitmap);
 
-        // Colors
-        Color colNetUp = Color.FromArgb(240, 160, 70);       // Warm amber/orange
-        Color colNetDown = Color.FromArgb(0, 215, 255);      // Vibrant cyan
-        Color colLabel = Color.FromArgb(170, 175, 185);     // Muted Fluent gray
-        Color colVal = Color.FromArgb(250, 250, 250);       // Clean white
-
-        int leftColX = 8;
-        int rightColX = 82;
-        int line1Y = 3;
-        int line2Y = 18;
-
-        // --- LINE 1: Net Upload & CPU ---
-        if (_config.ShowNetSpeed)
+        try
         {
-            TextRenderer.DrawText(g, "▲", _fontBold, new Point(leftColX, line1Y), colNetUp, TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, uploadStr, _fontRegular, new Point(leftColX + 13, line1Y), colVal, TextFormatFlags.NoPadding);
+            POINT ptSrc = new(0, 0);
+            SIZE size = new(w, h);
+            POINT ptDst = new(Location.X, Location.Y);
+            BLENDFUNCTION blend = new()
+            {
+                BlendOp = AC_SRC_OVER,
+                BlendFlags = 0,
+                SourceConstantAlpha = 255,
+                AlphaFormat = AC_SRC_ALPHA
+            };
+
+            UpdateLayeredWindow(
+                Handle,
+                screenDc,
+                ref ptDst,
+                ref size,
+                memDc,
+                ref ptSrc,
+                0,
+                ref blend,
+                ULW_ALPHA
+            );
         }
-
-        if (_config.ShowCpu)
+        finally
         {
-            TextRenderer.DrawText(g, "CPU", _fontBold, new Point(rightColX, line1Y), colLabel, TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, cpuStr, _fontRegular, new Point(rightColX + 28, line1Y), colVal, TextFormatFlags.NoPadding);
-        }
-
-        // --- LINE 2: Net Download & RAM (or GPU) ---
-        if (_config.ShowNetSpeed)
-        {
-            TextRenderer.DrawText(g, "▼", _fontBold, new Point(leftColX, line2Y), colNetDown, TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, downloadStr, _fontRegular, new Point(leftColX + 13, line2Y), colVal, TextFormatFlags.NoPadding);
-        }
-
-        if (_config.ShowGpu && _latestStats.GpuPercent > 0)
-        {
-            TextRenderer.DrawText(g, "GPU", _fontBold, new Point(rightColX, line2Y), colLabel, TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, $"{_latestStats.GpuPercent}%", _fontRegular, new Point(rightColX + 28, line2Y), colVal, TextFormatFlags.NoPadding);
-        }
-        else if (_config.ShowRam)
-        {
-            TextRenderer.DrawText(g, "RAM", _fontBold, new Point(rightColX, line2Y), colLabel, TextFormatFlags.NoPadding);
-            TextRenderer.DrawText(g, ramStr, _fontRegular, new Point(rightColX + 28, line2Y), colVal, TextFormatFlags.NoPadding);
+            SelectObject(memDc, oldBitmap);
+            DeleteObject(hBitmap);
+            DeleteDC(memDc);
+            ReleaseDC(IntPtr.Zero, screenDc);
         }
     }
 
@@ -297,18 +435,11 @@ public class TaskbarStatsOverlay : Form
         int diameter = radius * 2;
         var arc = new Rectangle(rect.Location, new Size(diameter, diameter));
 
-        // Top-left
         path.AddArc(arc, 180, 90);
-
-        // Top-right
         arc.X = rect.Right - diameter;
         path.AddArc(arc, 270, 90);
-
-        // Bottom-right
         arc.Y = rect.Bottom - diameter;
         path.AddArc(arc, 0, 90);
-
-        // Bottom-left
         arc.X = rect.Left;
         path.AddArc(arc, 90, 90);
 
@@ -332,6 +463,7 @@ public class TaskbarStatsOverlay : Form
         {
             Point diff = Point.Subtract(Cursor.Position, new Size(_dragStartCursor));
             Location = Point.Add(_dragStartForm, new Size(diff));
+            RenderLayeredWindow();
         }
     }
 
@@ -343,6 +475,7 @@ public class TaskbarStatsOverlay : Form
             _config.StatsCustomX = Location.X;
             _config.StatsCustomY = Location.Y;
             _config.Save();
+            RenderLayeredWindow();
         }
     }
 
@@ -356,4 +489,3 @@ public class TaskbarStatsOverlay : Form
         base.Dispose(disposing);
     }
 }
-

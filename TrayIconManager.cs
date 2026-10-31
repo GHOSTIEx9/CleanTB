@@ -147,7 +147,7 @@ public class TrayIconManager : IDisposable
             _config.ShowNetSpeed = !_config.ShowNetSpeed;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.Invalidate();
+            _statsOverlay.RenderLayeredWindow();
         });
 
         _itemStatsCpu = new ToolStripMenuItem("Show CPU Usage", null, (s, e) =>
@@ -155,7 +155,7 @@ public class TrayIconManager : IDisposable
             _config.ShowCpu = !_config.ShowCpu;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.Invalidate();
+            _statsOverlay.RenderLayeredWindow();
         });
 
         _itemStatsRam = new ToolStripMenuItem("Show RAM Usage", null, (s, e) =>
@@ -163,7 +163,7 @@ public class TrayIconManager : IDisposable
             _config.ShowRam = !_config.ShowRam;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.Invalidate();
+            _statsOverlay.RenderLayeredWindow();
         });
 
         _itemStatsGpu = new ToolStripMenuItem("Show GPU Usage", null, (s, e) =>
@@ -171,7 +171,7 @@ public class TrayIconManager : IDisposable
             _config.ShowGpu = !_config.ShowGpu;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.Invalidate();
+            _statsOverlay.RenderLayeredWindow();
         });
 
         _itemStatsClickThrough = new ToolStripMenuItem("Click-Through Mode", null, (s, e) =>
