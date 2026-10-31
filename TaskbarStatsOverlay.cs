@@ -372,13 +372,28 @@ public class TaskbarStatsOverlay : Form
 
         if (GetWindowRect(hTray, out RECT trayRect))
         {
-            if (trayRect.Height <= 0)
+            if (trayRect.Height <= 4)
             {
                 if (IsWindowVisible(Handle))
                 {
                     ShowWindow(Handle, SW_HIDE);
                 }
                 return;
+            }
+
+            IntPtr hMon = MonitorFromWindow(hTray, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi = new() { cbSize = Marshal.SizeOf<MONITORINFO>() };
+            if (GetMonitorInfo(hMon, ref mi))
+            {
+                // Auto-hidden taskbar slides off screen, leaving only <= 4px peeking
+                if (trayRect.Top >= mi.rcMonitor.Bottom - 4 || trayRect.Bottom <= mi.rcMonitor.Top + 4)
+                {
+                    if (IsWindowVisible(Handle))
+                    {
+                        ShowWindow(Handle, SW_HIDE);
+                    }
+                    return;
+                }
             }
         }
 
@@ -464,11 +479,11 @@ public class TaskbarStatsOverlay : Form
 
             if (GetWindowRect(hForeground, out RECT rcFg))
             {
-                // Fullscreen window covers the entire monitor rect
-                if (rcFg.Left <= mi.rcMonitor.Left &&
-                    rcFg.Top <= mi.rcMonitor.Top &&
-                    rcFg.Right >= mi.rcMonitor.Right &&
-                    rcFg.Bottom >= mi.rcMonitor.Bottom)
+                // Fullscreen window covers the entire monitor rect (with 2px tolerance for borderless margins)
+                if (rcFg.Left <= mi.rcMonitor.Left + 2 &&
+                    rcFg.Top <= mi.rcMonitor.Top + 2 &&
+                    rcFg.Right >= mi.rcMonitor.Right - 2 &&
+                    rcFg.Bottom >= mi.rcMonitor.Bottom - 2)
                 {
                     return true;
                 }

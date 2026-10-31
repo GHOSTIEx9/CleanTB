@@ -187,8 +187,7 @@ public class HardwareMonitor : IDisposable
             StatsUpdated?.Invoke(CurrentStats);
 
             // 5. Periodic Memory Optimization
-            // (Disabled to verify stability)
-            // if (_tickCount == 3 || _tickCount % 15 == 0) TrimProcessMemory();
+            if (_tickCount == 3 || _tickCount % 20 == 0) TrimProcessMemory();
         }
         catch { }
     }
