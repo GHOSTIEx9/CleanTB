@@ -186,8 +186,11 @@ public class HardwareMonitor : IDisposable
 
             StatsUpdated?.Invoke(CurrentStats);
 
-            // 5. Periodic Memory Optimization
-            if (_tickCount == 3 || _tickCount % 20 == 0) TrimProcessMemory();
+            // 5. Lightweight garbage collection hint (safe, no hard page purging)
+            if (_tickCount % 30 == 0)
+            {
+                try { GC.Collect(0, GCCollectionMode.Optimized, false); } catch { }
+            }
         }
         catch { }
     }
@@ -306,15 +309,6 @@ public class HardwareMonitor : IDisposable
         }
     }
 
-    public static void TrimProcessMemory()
-    {
-        try
-        {
-            GC.Collect(2, GCCollectionMode.Optimized, false, false);
-            SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, (IntPtr)(-1), (IntPtr)(-1));
-        }
-        catch { }
-    }
 
     public static string FormatSpeed(long bytesPerSec)
     {
