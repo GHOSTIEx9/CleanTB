@@ -14,6 +14,24 @@ static class Program
     {
         try
         {
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                try
+                {
+                    File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), e.ExceptionObject?.ToString() ?? "Unknown UnhandledException");
+                }
+                catch { }
+            };
+            Application.ThreadException += (s, e) =>
+            {
+                try
+                {
+                    File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), e.Exception.ToString());
+                }
+                catch { }
+            };
+
             const string mutexName = "CleanTB_SingleInstanceMutex_7B8A9C";
             _singleInstanceMutex = new Mutex(true, mutexName, out bool isOnlyInstance);
 
@@ -41,7 +59,11 @@ static class Program
         }
         catch (Exception ex)
         {
-            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), ex.ToString());
+            try
+            {
+                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), ex.ToString());
+            }
+            catch { }
         }
     }
 }

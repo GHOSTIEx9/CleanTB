@@ -2,6 +2,7 @@
 [Bb]in/
 [Oo]bj/
 [Dd]ist/
+publish/
 
 ## Visual Studio & IDE files
 .vs/

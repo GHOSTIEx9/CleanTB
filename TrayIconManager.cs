@@ -31,7 +31,9 @@ public class TrayIconManager : IDisposable
     // Menu items - Hardware Stats
     private ToolStripMenuItem _menuHardwareStats = null!;
     private ToolStripMenuItem _itemStatsEnable = null!;
-    private ToolStripMenuItem _itemStatsNet = null!;
+    private ToolStripMenuItem _itemStatsDownload = null!;
+    private ToolStripMenuItem _itemStatsUpload = null!;
+    private ToolStripMenuItem _itemStatsNetArrows = null!;
     private ToolStripMenuItem _itemStatsCpu = null!;
     private ToolStripMenuItem _itemStatsRam = null!;
     private ToolStripMenuItem _itemStatsGpu = null!;
@@ -142,9 +144,33 @@ public class TrayIconManager : IDisposable
             }
         });
 
-        _itemStatsNet = new ToolStripMenuItem("Show Network Speed (↑ / ↓)", null, (s, e) =>
+        _itemStatsDownload = new ToolStripMenuItem("Show Download Speed Only", null, (s, e) =>
         {
-            _config.ShowNetSpeed = !_config.ShowNetSpeed;
+            _config.ShowDownloadOnly = !_config.ShowDownloadOnly;
+            if (_config.ShowDownloadOnly)
+            {
+                _config.ShowUploadSpeed = false;
+            }
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.RenderLayeredWindow();
+        });
+
+        _itemStatsUpload = new ToolStripMenuItem("Show Upload Speed", null, (s, e) =>
+        {
+            _config.ShowUploadSpeed = !_config.ShowUploadSpeed;
+            if (_config.ShowUploadSpeed)
+            {
+                _config.ShowDownloadOnly = false;
+            }
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.RenderLayeredWindow();
+        });
+
+        _itemStatsNetArrows = new ToolStripMenuItem("Show Direction Arrows (▲ / ▼)", null, (s, e) =>
+        {
+            _config.ShowNetArrows = !_config.ShowNetArrows;
             _config.Save();
             UpdateMenuStates();
             _statsOverlay.RenderLayeredWindow();
@@ -189,7 +215,10 @@ public class TrayIconManager : IDisposable
         {
             _itemStatsEnable,
             new ToolStripSeparator(),
-            _itemStatsNet,
+            _itemStatsDownload,
+            _itemStatsUpload,
+            _itemStatsNetArrows,
+            new ToolStripSeparator(),
             _itemStatsCpu,
             _itemStatsRam,
             _itemStatsGpu,
@@ -236,9 +265,9 @@ public class TrayIconManager : IDisposable
         {
             MessageBox.Show(
                 "CleanTB - Ultra-lightweight, bloat-free Windows 11 Taskbar Customizer.\n\n" +
-                "• Memory: ~5 MB - 7 MB active RAM\n" +
+                "• Memory: ~3 MB - 5 MB active RAM\n" +
                 "• CPU: < 0.1% usage\n" +
-                "• Real-time Taskbar CPU, RAM, & Network speed HUD\n" +
+                "• Real-time Taskbar Download, Upload, CPU, RAM, & GPU HUD\n" +
                 "• No telemetry, no logs, pure native Win32 APIs\n\n" +
                 "Tips:\n" +
                 "• Left-click tray icon to toggle Clear / Default.\n" +
@@ -281,7 +310,9 @@ public class TrayIconManager : IDisposable
         _itemNormal.Checked = _config.Mode == TaskbarMode.Normal;
 
         _itemStatsEnable.Checked = _config.ShowHardwareStats;
-        _itemStatsNet.Checked = _config.ShowNetSpeed;
+        _itemStatsDownload.Checked = _config.ShowDownloadOnly;
+        _itemStatsUpload.Checked = _config.ShowUploadSpeed;
+        _itemStatsNetArrows.Checked = _config.ShowNetArrows;
         _itemStatsCpu.Checked = _config.ShowCpu;
         _itemStatsRam.Checked = _config.ShowRam;
         _itemStatsGpu.Checked = _config.ShowGpu;

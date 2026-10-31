@@ -22,7 +22,9 @@ public class AppConfig
 
     // Hardware Stats Display Settings
     public bool ShowHardwareStats { get; set; } = true;
-    public bool ShowNetSpeed { get; set; } = true;
+    public bool ShowDownloadOnly { get; set; } = true;
+    public bool ShowUploadSpeed { get; set; } = false;
+    public bool ShowNetArrows { get; set; } = false;
     public bool ShowCpu { get; set; } = true;
     public bool ShowRam { get; set; } = true;
     public bool ShowGpu { get; set; } = true;

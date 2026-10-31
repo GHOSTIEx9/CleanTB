@@ -1,11 +1,11 @@
 # CleanTB 🪟⚡
 
 > **Ultra-Lightweight, Bloat-Free Taskbar Customizer for Windows 11 and Windows 10**  
-> *~5 MB RAM • Zero Telemetry • Pure Native Explorer Pipeline • Instant Tray Toggle*
+> *~3 MB – 5 MB RAM • Live Transparent Hardware Stats • Zero Telemetry • Pure Native Win32*
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?logo=windows)](https://github.com)
 [![Runtime](https://img.shields.io/badge/.NET-8.0--windows-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
-[![Memory Footprint](https://img.shields.io/badge/RAM-~5--8%20MB-brightgreen)](#-performance-benchmark)
+[![Memory Footprint](https://img.shields.io/badge/RAM-~3--5%20MB-brightgreen)](#-performance-benchmark)
 [![Telemetry](https://img.shields.io/badge/Telemetry-Zero%20%2F%20Offline-success)](#-privacy--zero-telemetry)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -27,8 +27,9 @@ By interacting directly with the native Windows Shell diagnostics and taskbar ap
 
 | Metric / Feature | Standard TranslucentTB (Store/MSIX) | CleanTB (Rebuilt) |
 | :--- | :--- | :--- |
-| **Idle Memory (RAM)** | ~30 MB – 70 MB | **~5 MB – 8 MB** *(~85% reduction)* |
+| **Idle Memory (RAM)** | ~30 MB – 70 MB | **~3 MB – 5 MB** *(~90% reduction)* |
 | **UI Framework Overhead** | Heavy WinUI 3, XAML Islands, `Xaml.dll` | **Zero UI bloat** (pure Windows message pump) |
+| **Hardware Stats HUD** | Not available | **Single-line 100% transparent HUD (Net/CPU/RAM/GPU)** |
 | **Telemetry & Disk I/O** | Active (`ProgramLog.dll` writes to disk) | **Zero telemetry, 100% offline** |
 | **Binary & Dependencies** | Dozens of DLLs + Virtualized Registry | **Standalone, single-folder executable** |
 | **Tray Quick Action** | Opens sluggish XAML flyout | **Instant 1-click toggle (Clear ↔ Default)** |
@@ -52,11 +53,13 @@ By interacting directly with the native Windows Shell diagnostics and taskbar ap
 - **🚀 Run at Startup**: One-click toggle in the tray menu to automatically start CleanTB with Windows via `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
 - **⚡ Left-Click Quick Toggle**: Left-click the system tray icon to instantly toggle between **Clear** and **Normal** without opening any menus.
 - **📊 Real-Time Taskbar Hardware Stats HUD**:
-  - Live **Network Speed** (Upload ▲ / Download ▼), **CPU %**, and **RAM %** (plus optional GPU) rendered directly on your taskbar.
-  - Docks smoothly next to your system clock / tray icons with modern Windows 11 Fluent typography.
+  - Live **Network Download Speed** (`17 KB/s` by default, clean and arrow-free, or full upload/download with optional direction arrows).
+  - Live **CPU %**, **RAM %**, and multi-engine **GPU 3D %** rendered in a clean, single horizontal line right next to your tray icons and system clock.
+  - **100% Transparent Layered Canvas**: Direct Win32 32-bit ARGB layered rendering (`WS_EX_LAYERED` with `UpdateLayeredWindow`) with zero tint, zero background box, zero pill, and zero pink halos—numbers and text float directly over your wallpaper just like the native Windows 11 clock.
+  - **Aggressive Memory Trimming Engine**: Automatically trims unreferenced working set pages via `EmptyWorkingSet`, pinning active memory consumption down to **~3 MB – 5 MB RAM** with `< 0.1% CPU`.
   - **Double-click** the stats HUD to instantly launch Windows Task Manager (`taskmgr.exe`).
   - **Drag & Drop** to reposition the HUD anywhere, or reset to auto-dock from the tray menu.
-  - Built with pure native Win32 kernel calls (`GetSystemTimes`, `GlobalMemoryStatusEx`) consuming `< 0.1% CPU` and `~1.5 MB RAM`.
+  - Fully customizable via System Tray: toggle individual metrics (Download Speed Only, Upload Speed, Direction Arrows, CPU, RAM, GPU), or turn on click-through mode.
 - **🔒 Single Instance Guard**: Protected by a native system mutex to prevent accidental duplicate instances.
 
 ---

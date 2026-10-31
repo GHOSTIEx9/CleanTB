@@ -44,6 +44,9 @@ public class HardwareMonitor : IDisposable
     [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
     private static extern bool GlobalMemoryStatusEx([In, Out] MEMORYSTATUSEX lpBuffer);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetProcessWorkingSetSize(IntPtr hProcess, IntPtr dwMinimumWorkingSetSize, IntPtr dwMaximumWorkingSetSize);
+
     private static ulong FileTimeToUInt64(System.Runtime.InteropServices.ComTypes.FILETIME ft)
     {
         return ((ulong)ft.dwHighDateTime << 32) | (uint)ft.dwLowDateTime;
@@ -60,10 +63,16 @@ public class HardwareMonitor : IDisposable
     private long _prevBytesReceived;
     private long _prevBytesSent;
     private bool _isFirstSample = true;
+    private int _tickCount = 0;
 
+    // Cached network interfaces to eliminate per-second allocations
+    private NetworkInterface[]? _cachedInterfaces;
+    private DateTime _lastInterfaceRefresh = DateTime.MinValue;
+
+    // GPU Engine Counters
     private readonly List<PerformanceCounter> _gpuCounters = new();
     private DateTime _lastGpuCountersRefresh = DateTime.MinValue;
-    private bool _gpuCounterFailed;
+    private int _gpuFailureCount = 0;
 
     public HardwareStats CurrentStats { get; private set; }
     public event Action<HardwareStats>? StatsUpdated;
@@ -81,6 +90,7 @@ public class HardwareMonitor : IDisposable
         }
 
         // Initialize Net baseline
+        RefreshNetworkInterfacesIfNeeded();
         GetTotalNetworkBytes(out _prevBytesReceived, out _prevBytesSent);
         _prevNetCheckTime = DateTime.UtcNow;
 
@@ -92,7 +102,9 @@ public class HardwareMonitor : IDisposable
     {
         try
         {
-            // 1. CPU Measurement (Win32 native GetSystemTimes - ~0.0001ms)
+            _tickCount++;
+
+            // 1. CPU Measurement (Win32 native GetSystemTimes - ~0.0001ms, 0 allocations)
             int cpuPercent = 0;
             if (GetSystemTimes(out var idle, out var kernel, out var user))
             {
@@ -116,7 +128,7 @@ public class HardwareMonitor : IDisposable
                 _prevUserTime = currentUser;
             }
 
-            // 2. RAM Measurement (Win32 native GlobalMemoryStatusEx - ~0.0001ms)
+            // 2. RAM Measurement (Win32 native GlobalMemoryStatusEx - ~0.0001ms, 0 allocations)
             int ramPercent = 0;
             double ramUsedGB = 0;
             double ramTotalGB = 0;
@@ -127,11 +139,12 @@ public class HardwareMonitor : IDisposable
                 ramUsedGB = (_memStatus.ullTotalPhys - _memStatus.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
             }
 
-            // 3. Network Speed Measurement
+            // 3. Network Speed Measurement (using cached interface descriptors)
             DateTime now = DateTime.UtcNow;
             double elapsedSeconds = (now - _prevNetCheckTime).TotalSeconds;
             if (elapsedSeconds < 0.2) elapsedSeconds = 1.0;
 
+            RefreshNetworkInterfacesIfNeeded();
             GetTotalNetworkBytes(out long currentBytesReceived, out long currentBytesSent);
 
             long downloadSpeedBps = 0;
@@ -172,40 +185,62 @@ public class HardwareMonitor : IDisposable
             );
 
             StatsUpdated?.Invoke(CurrentStats);
+
+            // 5. Periodic Memory Optimization
+            // (Disabled to verify stability)
+            // if (_tickCount == 3 || _tickCount % 15 == 0) TrimProcessMemory();
         }
         catch { }
     }
 
-    private static void GetTotalNetworkBytes(out long totalReceived, out long totalSent)
+    private void RefreshNetworkInterfacesIfNeeded()
+    {
+        if (_cachedInterfaces == null || (DateTime.UtcNow - _lastInterfaceRefresh).TotalSeconds > 60)
+        {
+            try
+            {
+                var list = new List<NetworkInterface>();
+                foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (iface.OperationalStatus == OperationalStatus.Up &&
+                        iface.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
+                        iface.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
+                    {
+                        list.Add(iface);
+                    }
+                }
+                _cachedInterfaces = list.ToArray();
+                _lastInterfaceRefresh = DateTime.UtcNow;
+            }
+            catch { }
+        }
+    }
+
+    private void GetTotalNetworkBytes(out long totalReceived, out long totalSent)
     {
         totalReceived = 0;
         totalSent = 0;
 
-        try
+        if (_cachedInterfaces == null) return;
+
+        foreach (var iface in _cachedInterfaces)
         {
-            var interfaces = NetworkInterface.GetAllNetworkInterfaces();
-            foreach (var iface in interfaces)
+            try
             {
-                if (iface.OperationalStatus == OperationalStatus.Up &&
-                    iface.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
-                    iface.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
-                {
-                    var stats = iface.GetIPStatistics();
-                    totalReceived += stats.BytesReceived;
-                    totalSent += stats.BytesSent;
-                }
+                var stats = iface.GetIPStatistics();
+                totalReceived += stats.BytesReceived;
+                totalSent += stats.BytesSent;
             }
+            catch { }
         }
-        catch { }
     }
 
     private int SampleGpuUsage()
     {
-        if (_gpuCounterFailed) return 0;
+        if (_gpuFailureCount > 5) return 0;
 
         try
         {
-            // Refresh 3D engine instances every 15 seconds to pick up newly started games/apps
             if ((DateTime.UtcNow - _lastGpuCountersRefresh).TotalSeconds > 15 || _gpuCounters.Count == 0)
             {
                 foreach (var c in _gpuCounters) { try { c.Dispose(); } catch { } }
@@ -213,23 +248,39 @@ public class HardwareMonitor : IDisposable
 
                 var category = new PerformanceCounterCategory("GPU Engine");
                 var instanceNames = category.GetInstanceNames();
+                var seenPids = new HashSet<string>();
+
                 foreach (var name in instanceNames)
                 {
                     if (name.Contains("engtype_3D", StringComparison.OrdinalIgnoreCase))
                     {
-                        try
+                        // Track one primary 3D engine per process to dramatically minimize handle and memory overhead
+                        int pidStart = name.IndexOf("pid_", StringComparison.OrdinalIgnoreCase);
+                        string pidKey = name;
+                        if (pidStart >= 0)
                         {
-                            var counter = new PerformanceCounter("GPU Engine", "Utilization Percentage", name, true);
-                            counter.NextValue(); // Prime first sample
-                            _gpuCounters.Add(counter);
+                            int pidEnd = name.IndexOf('_', pidStart + 4);
+                            if (pidEnd > pidStart)
+                            {
+                                pidKey = name.Substring(pidStart, pidEnd - pidStart);
+                            }
                         }
-                        catch { }
+
+                        if (seenPids.Add(pidKey))
+                        {
+                            try
+                            {
+                                var counter = new PerformanceCounter("GPU Engine", "Utilization Percentage", name, true);
+                                counter.NextValue();
+                                _gpuCounters.Add(counter);
+                            }
+                            catch { }
+                        }
                     }
                 }
                 _lastGpuCountersRefresh = DateTime.UtcNow;
             }
 
-            // Sum current utilization across all active 3D engines
             double total = 0;
             for (int i = _gpuCounters.Count - 1; i >= 0; i--)
             {
@@ -245,13 +296,25 @@ public class HardwareMonitor : IDisposable
                 }
             }
 
+            _gpuFailureCount = 0;
             return (int)Math.Clamp(Math.Round(total), 0, 100);
         }
         catch
         {
-            _gpuCounterFailed = true;
+            _gpuFailureCount++;
+            _lastGpuCountersRefresh = DateTime.UtcNow;
             return 0;
         }
+    }
+
+    public static void TrimProcessMemory()
+    {
+        try
+        {
+            GC.Collect(2, GCCollectionMode.Optimized, false, false);
+            SetProcessWorkingSetSize(Process.GetCurrentProcess().Handle, (IntPtr)(-1), (IntPtr)(-1));
+        }
+        catch { }
     }
 
     public static string FormatSpeed(long bytesPerSec)

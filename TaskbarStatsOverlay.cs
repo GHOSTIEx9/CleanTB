@@ -104,6 +104,17 @@ public class TaskbarStatsOverlay : Form
     private readonly Font _fontRegular;
     private readonly Font _fontBold;
 
+    // Cached GDI tools to eliminate per-second allocations
+    private readonly SolidBrush _brushVal = new(Color.FromArgb(255, 255, 255));
+    private readonly SolidBrush _brushLabel = new(Color.FromArgb(175, 180, 190));
+    private readonly SolidBrush _brushNetDown = new(Color.FromArgb(0, 225, 255));
+    private readonly SolidBrush _brushNetUp = new(Color.FromArgb(255, 185, 80));
+    private readonly Pen _penDivider = new(Color.FromArgb(60, 255, 255, 255), 1f);
+    private readonly StringFormat _sf = new(StringFormat.GenericTypographic)
+    {
+        FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces
+    };
+
     private const int OVERLAY_HEIGHT = 26;
 
     public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, ContextMenuStrip contextMenu)
@@ -117,11 +128,11 @@ public class TaskbarStatsOverlay : Form
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
 
-        // Modern Fluent typography - 8.5pt matches the Windows 11 clock and tray font size
+        // Clean typography matching Windows 11 system tray font size
         _fontRegular = TryCreateFont("Segoe UI Variable Text", 8.5f, FontStyle.Regular);
         _fontBold = TryCreateFont("Segoe UI Variable Text", 8.5f, FontStyle.Bold);
 
-        Size = new Size(320, OVERLAY_HEIGHT);
+        Size = new Size(200, OVERLAY_HEIGHT);
 
         _monitor.StatsUpdated += stats =>
         {
@@ -132,8 +143,19 @@ public class TaskbarStatsOverlay : Form
                 {
                     BeginInvoke(new Action(() =>
                     {
-                        RenderLayeredWindow();
-                        UpdateDockPosition();
+                        try
+                        {
+                            RenderLayeredWindow();
+                            UpdateDockPosition();
+                        }
+                        catch (Exception ex)
+                        {
+                            try
+                            {
+                                System.IO.File.WriteAllText(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), ex.ToString());
+                            }
+                            catch { }
+                        }
                     }));
                 }
                 catch { }
@@ -189,7 +211,7 @@ public class TaskbarStatsOverlay : Form
 
             if (_config?.StatsClickThrough == true)
             {
-                cp.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT (Clicks pass through)
+                cp.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT (Click through to taskbar)
             }
 
             return cp;
@@ -264,166 +286,208 @@ public class TaskbarStatsOverlay : Form
     {
         if (!IsHandleCreated || IsDisposed) return;
 
-        // Formatted strings
-        string uploadStr = HardwareMonitor.FormatSpeed(_latestStats.UploadSpeedBps);
-        string downloadStr = HardwareMonitor.FormatSpeed(_latestStats.DownloadSpeedBps);
-        string cpuStr = $"{_latestStats.CpuPercent}%";
-        string ramStr = $"{_latestStats.RamPercent}%";
-        string gpuStr = $"{_latestStats.GpuPercent}%";
-
-        // Modern Windows 11 high-contrast palette
-        Color colNetUp = Color.FromArgb(255, 185, 80);       // Warm amber/orange
-        Color colNetDown = Color.FromArgb(0, 225, 255);      // Clean crisp cyan
-        Color colLabel = Color.FromArgb(175, 180, 190);     // Soft silver-gray (matches Windows 11 system font)
-        Color colVal = Color.FromArgb(255, 255, 255);       // Pure crisp white
-        Color colDivider = Color.FromArgb(60, 255, 255, 255); // Subtle translucent divider
-
-        // 1. Measure all components to dynamically fit width
-        int currentX = 0;
-        int rowY = 4;
-        int h = OVERLAY_HEIGHT;
-
-        // Temporary graphics to measure
-        int neededWidth = 0;
-        using (var measureBmp = new Bitmap(1, 1))
-        using (var gMeasure = Graphics.FromImage(measureBmp))
-        {
-            if (_config.ShowNetSpeed)
-            {
-                neededWidth += TextRenderer.MeasureText(gMeasure, "▲ " + uploadStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-                neededWidth += TextRenderer.MeasureText(gMeasure, "▼ " + downloadStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 12;
-                neededWidth += 12; // divider spacing
-            }
-
-            if (_config.ShowCpu)
-            {
-                neededWidth += TextRenderer.MeasureText(gMeasure, "CPU " + cpuStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-            }
-
-            if (_config.ShowRam)
-            {
-                neededWidth += TextRenderer.MeasureText(gMeasure, "RAM " + ramStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-            }
-
-            if (_config.ShowGpu)
-            {
-                neededWidth += TextRenderer.MeasureText(gMeasure, "GPU " + gpuStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 6;
-            }
-        }
-
-        neededWidth = Math.Max(neededWidth + 4, 100);
-        if (Width != neededWidth)
-        {
-            Width = neededWidth;
-        }
-
-        int w = Width;
-
-        // 2. Render to 32-bit ARGB bitmap (100% transparent background - ZERO pink, ZERO black tint)
-        using var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
-        using (var g = Graphics.FromImage(bmp))
-        {
-            g.SmoothingMode = SmoothingMode.AntiAlias;
-            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-
-            // Completely transparent background - NO background box, NO pill, NO tint!
-            g.Clear(Color.Transparent);
-
-            currentX = 2;
-
-            // --- Network Speed: ▲ Upload ▼ Download ---
-            if (_config.ShowNetSpeed)
-            {
-                // Upload ▲
-                TextRenderer.DrawText(g, "▲", _fontBold, new Point(currentX, rowY), colNetUp, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, "▲ ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
-
-                TextRenderer.DrawText(g, uploadStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, uploadStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-
-                // Download ▼
-                TextRenderer.DrawText(g, "▼", _fontBold, new Point(currentX, rowY), colNetDown, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, "▼ ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
-
-                TextRenderer.DrawText(g, downloadStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, downloadStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-
-                // Subtle vertical divider line
-                using (var pen = new Pen(colDivider, 1f))
-                {
-                    g.DrawLine(pen, currentX, rowY + 2, currentX, rowY + 14);
-                }
-                currentX += 12;
-            }
-
-            // --- CPU Usage ---
-            if (_config.ShowCpu)
-            {
-                TextRenderer.DrawText(g, "CPU", _fontBold, new Point(currentX, rowY), colLabel, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, "CPU ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
-
-                TextRenderer.DrawText(g, cpuStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, cpuStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-            }
-
-            // --- RAM Usage ---
-            if (_config.ShowRam)
-            {
-                TextRenderer.DrawText(g, "RAM", _fontBold, new Point(currentX, rowY), colLabel, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, "RAM ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
-
-                TextRenderer.DrawText(g, ramStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, ramStr, _fontRegular, Size.Empty, TextFormatFlags.NoPadding).Width + 10;
-            }
-
-            // --- GPU Usage ---
-            if (_config.ShowGpu)
-            {
-                TextRenderer.DrawText(g, "GPU", _fontBold, new Point(currentX, rowY), colLabel, TextFormatFlags.NoPadding);
-                currentX += TextRenderer.MeasureText(g, "GPU ", _fontBold, Size.Empty, TextFormatFlags.NoPadding).Width;
-
-                TextRenderer.DrawText(g, gpuStr, _fontRegular, new Point(currentX, rowY), colVal, TextFormatFlags.NoPadding);
-            }
-        }
-
-        // Apply true 32-bit ARGB bitmap to the layered window
-        IntPtr screenDc = GetDC(IntPtr.Zero);
-        IntPtr memDc = CreateCompatibleDC(screenDc);
-        IntPtr hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
-        IntPtr oldBitmap = SelectObject(memDc, hBitmap);
-
         try
         {
-            POINT ptSrc = new(0, 0);
-            SIZE size = new(w, h);
-            POINT ptDst = new(Location.X, Location.Y);
-            BLENDFUNCTION blend = new()
-            {
-                BlendOp = AC_SRC_OVER,
-                BlendFlags = 0,
-                SourceConstantAlpha = 255,
-                AlphaFormat = AC_SRC_ALPHA
-            };
+            // Formatted metric strings
+            string uploadStr = HardwareMonitor.FormatSpeed(_latestStats.UploadSpeedBps);
+            string downloadStr = HardwareMonitor.FormatSpeed(_latestStats.DownloadSpeedBps);
+            string cpuStr = $"{_latestStats.CpuPercent}%";
+            string ramStr = $"{_latestStats.RamPercent}%";
+            string gpuStr = $"{_latestStats.GpuPercent}%";
 
-            UpdateLayeredWindow(
-                Handle,
-                screenDc,
-                ref ptDst,
-                ref size,
-                memDc,
-                ref ptSrc,
-                0,
-                ref blend,
-                ULW_ALPHA
-            );
+            int h = OVERLAY_HEIGHT;
+
+            // 1. Measure exact layout width using temporary measuring bitmap
+            float calcX = 2f;
+            bool hasNet = _config.ShowUploadSpeed || _config.ShowDownloadOnly;
+
+            using (var measureBmp = new Bitmap(1, 1))
+            using (var gMeasure = Graphics.FromImage(measureBmp))
+            {
+                gMeasure.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+
+                if (_config.ShowUploadSpeed)
+                {
+                    if (_config.ShowNetArrows)
+                    {
+                        calcX += gMeasure.MeasureString("▲ ", _fontBold, PointF.Empty, _sf).Width;
+                    }
+                    else
+                    {
+                        calcX += gMeasure.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
+                    }
+                    calcX += gMeasure.MeasureString(uploadStr, _fontRegular, PointF.Empty, _sf).Width + 8f;
+                }
+
+                if (_config.ShowDownloadOnly)
+                {
+                    if (_config.ShowNetArrows)
+                    {
+                        calcX += gMeasure.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
+                    }
+                    else if (_config.ShowUploadSpeed)
+                    {
+                        calcX += gMeasure.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width;
+                    }
+                    calcX += gMeasure.MeasureString(downloadStr, _fontRegular, PointF.Empty, _sf).Width + 8f;
+                }
+
+                if (hasNet && (_config.ShowCpu || _config.ShowRam || _config.ShowGpu))
+                {
+                    calcX += 12f; // divider spacing
+                }
+
+                if (_config.ShowCpu)
+                {
+                    calcX += gMeasure.MeasureString("CPU ", _fontBold, PointF.Empty, _sf).Width;
+                    calcX += gMeasure.MeasureString(cpuStr, _fontRegular, PointF.Empty, _sf).Width + 8f;
+                }
+
+                if (_config.ShowRam)
+                {
+                    calcX += gMeasure.MeasureString("RAM ", _fontBold, PointF.Empty, _sf).Width;
+                    calcX += gMeasure.MeasureString(ramStr, _fontRegular, PointF.Empty, _sf).Width + 8f;
+                }
+
+                if (_config.ShowGpu)
+                {
+                    calcX += gMeasure.MeasureString("GPU ", _fontBold, PointF.Empty, _sf).Width;
+                    calcX += gMeasure.MeasureString(gpuStr, _fontRegular, PointF.Empty, _sf).Width + 4f;
+                }
+            }
+
+            int neededWidth = Math.Max((int)Math.Ceiling(calcX) + 4, 40);
+            if (Width != neededWidth)
+            {
+                Width = neededWidth;
+            }
+
+            int w = Width;
+
+            // 2. Render to 32bpp alpha bitmap
+            using var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+
+                // 100% transparent background - NO black tint, NO pill, NO box
+                g.Clear(Color.Transparent);
+
+                float currentX = 2f;
+                float rowY = 5f;
+
+                // --- Network Activity ---
+                if (_config.ShowUploadSpeed)
+                {
+                    if (_config.ShowNetArrows)
+                    {
+                        g.DrawString("▲", _fontBold, _brushNetUp, currentX, rowY, _sf);
+                        currentX += g.MeasureString("▲ ", _fontBold, PointF.Empty, _sf).Width;
+                    }
+                    else
+                    {
+                        g.DrawString("UP", _fontBold, _brushNetUp, currentX, rowY, _sf);
+                        currentX += g.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
+                    }
+
+                    g.DrawString(uploadStr, _fontRegular, _brushVal, currentX, rowY, _sf);
+                    currentX += g.MeasureString(uploadStr, _fontRegular, PointF.Empty, _sf).Width + 8f;
+                }
+
+                if (_config.ShowDownloadOnly)
+                {
+                    if (_config.ShowNetArrows)
+                    {
+                        g.DrawString("▼", _fontBold, _brushNetDown, currentX, rowY, _sf);
+                        currentX += g.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
+                    }
+                    else if (_config.ShowUploadSpeed)
+                    {
+                        g.DrawString("DN", _fontBold, _brushNetDown, currentX, rowY, _sf);
+                        currentX += g.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width;
+                    }
+
+                    g.DrawString(downloadStr, _fontRegular, _brushVal, currentX, rowY, _sf);
+                    currentX += g.MeasureString(downloadStr, _fontRegular, PointF.Empty, _sf).Width + 8f;
+                }
+
+                if (hasNet && (_config.ShowCpu || _config.ShowRam || _config.ShowGpu))
+                {
+                    g.DrawLine(_penDivider, currentX + 1f, rowY + 2f, currentX + 1f, rowY + 14f);
+                    currentX += 12f;
+                }
+
+                // --- CPU Usage ---
+                if (_config.ShowCpu)
+                {
+                    g.DrawString("CPU", _fontBold, _brushLabel, currentX, rowY, _sf);
+                    currentX += g.MeasureString("CPU ", _fontBold, PointF.Empty, _sf).Width;
+
+                    g.DrawString(cpuStr, _fontRegular, _brushVal, currentX, rowY, _sf);
+                    currentX += g.MeasureString(cpuStr, _fontRegular, PointF.Empty, _sf).Width + 8f;
+                }
+
+                // --- RAM Usage ---
+                if (_config.ShowRam)
+                {
+                    g.DrawString("RAM", _fontBold, _brushLabel, currentX, rowY, _sf);
+                    currentX += g.MeasureString("RAM ", _fontBold, PointF.Empty, _sf).Width;
+
+                    g.DrawString(ramStr, _fontRegular, _brushVal, currentX, rowY, _sf);
+                    currentX += g.MeasureString(ramStr, _fontRegular, PointF.Empty, _sf).Width + 8f;
+                }
+
+                // --- GPU Usage ---
+                if (_config.ShowGpu)
+                {
+                    g.DrawString("GPU", _fontBold, _brushLabel, currentX, rowY, _sf);
+                    currentX += g.MeasureString("GPU ", _fontBold, PointF.Empty, _sf).Width;
+
+                    g.DrawString(gpuStr, _fontRegular, _brushVal, currentX, rowY, _sf);
+                    currentX += g.MeasureString(gpuStr, _fontRegular, PointF.Empty, _sf).Width + 4f;
+                }
+            }
+
+            // 3. Update layered window with true 32bpp alpha bitmap
+            IntPtr screenDc = GetDC(IntPtr.Zero);
+            IntPtr memDc = CreateCompatibleDC(screenDc);
+            IntPtr hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
+            IntPtr oldBitmap = SelectObject(memDc, hBitmap);
+            try
+            {
+                POINT ptSrc = new(0, 0);
+                SIZE size = new(w, h);
+                POINT ptDst = new(Location.X, Location.Y);
+                BLENDFUNCTION blend = new()
+                {
+                    BlendOp = AC_SRC_OVER,
+                    BlendFlags = 0,
+                    SourceConstantAlpha = 255,
+                    AlphaFormat = AC_SRC_ALPHA
+                };
+
+                UpdateLayeredWindow(
+                    Handle,
+                    screenDc,
+                    ref ptDst,
+                    ref size,
+                    memDc,
+                    ref ptSrc,
+                    0,
+                    ref blend,
+                    ULW_ALPHA
+                );
+            }
+            finally
+            {
+                SelectObject(memDc, oldBitmap);
+                DeleteObject(hBitmap);
+                DeleteDC(memDc);
+                ReleaseDC(IntPtr.Zero, screenDc);
+            }
         }
-        finally
-        {
-            SelectObject(memDc, oldBitmap);
-            DeleteObject(hBitmap);
-            DeleteDC(memDc);
-            ReleaseDC(IntPtr.Zero, screenDc);
-        }
+        catch { }
     }
 
     private void OnMouseDown(object? sender, MouseEventArgs e)
@@ -464,6 +528,12 @@ public class TaskbarStatsOverlay : Form
         {
             _fontRegular?.Dispose();
             _fontBold?.Dispose();
+            _brushVal?.Dispose();
+            _brushLabel?.Dispose();
+            _brushNetDown?.Dispose();
+            _brushNetUp?.Dispose();
+            _penDivider?.Dispose();
+            _sf?.Dispose();
         }
         base.Dispose(disposing);
     }
