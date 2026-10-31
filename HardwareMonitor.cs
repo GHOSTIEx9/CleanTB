@@ -262,3 +262,4 @@ public class HardwareMonitor : IDisposable
         _gpuCounter?.Dispose();
     }
 }
+

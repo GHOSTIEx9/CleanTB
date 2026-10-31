@@ -145,12 +145,22 @@ public class TaskbarStatsOverlay : Form
             cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
             cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE
 
-            if (_config.StatsClickThrough)
+            if (_config?.StatsClickThrough == true)
             {
                 cp.ExStyle |= 0x00000020; // WS_EX_TRANSPARENT
             }
 
             return cp;
+        }
+    }
+
+    public void SetClickThrough(bool clickThrough)
+    {
+        _config.StatsClickThrough = clickThrough;
+        _config.Save();
+        if (IsHandleCreated)
+        {
+            RecreateHandle();
         }
     }
 
@@ -346,3 +356,4 @@ public class TaskbarStatsOverlay : Form
         base.Dispose(disposing);
     }
 }
+

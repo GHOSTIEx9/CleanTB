@@ -176,15 +176,8 @@ public class TrayIconManager : IDisposable
 
         _itemStatsClickThrough = new ToolStripMenuItem("Click-Through Mode", null, (s, e) =>
         {
-            _config.StatsClickThrough = !_config.StatsClickThrough;
-            _config.Save();
+            _statsOverlay.SetClickThrough(!_config.StatsClickThrough);
             UpdateMenuStates();
-            MessageBox.Show(
-                "Click-Through mode updated. Restart CleanTB or toggle stats to apply input changes.",
-                "CleanTB",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information
-            );
         });
 
         _itemStatsResetPos = new ToolStripMenuItem("Reset Dock Position", null, (s, e) =>
