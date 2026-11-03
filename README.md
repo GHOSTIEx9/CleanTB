@@ -1,11 +1,11 @@
 # CleanTB 🪟⚡
 
 > **Ultra-Lightweight, Bloat-Free Taskbar Customizer for Windows 11 and Windows 10**  
-> *~3 MB – 5 MB RAM • Live Transparent Hardware Stats • Zero Telemetry • Pure Native Win32*
+> *~20 MB – 30 MB RAM • Live Transparent Hardware Stats • Zero Telemetry • Pure Native Win32*
 
 [![Platform](https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D6?logo=windows)](https://github.com)
 [![Runtime](https://img.shields.io/badge/.NET-8.0--windows-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
-[![Memory Footprint](https://img.shields.io/badge/RAM-~3--5%20MB-brightgreen)](#-performance-benchmark)
+[![Memory Footprint](https://img.shields.io/badge/RAM-~20--30%20MB-brightgreen)](#-performance-benchmark)
 [![Telemetry](https://img.shields.io/badge/Telemetry-Zero%20%2F%20Offline-success)](#-privacy--zero-telemetry)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
@@ -19,7 +19,7 @@ While popular utilities like TranslucentTB provide great visual effects, their r
 
 **CleanTB strips all of that away.** 
 
-By interacting directly with the native Windows Shell diagnostics and taskbar appearance pipeline (`ITaskbarAppearanceService` injected via `ExplorerTAP`), CleanTB delivers identical, fluid taskbar effects with **over 85% less memory usage**, instant startup, and zero background I/O.
+By interacting directly with the native Windows Shell diagnostics and taskbar appearance pipeline (`ITaskbarAppearanceService` injected via `ExplorerTAP`), CleanTB delivers identical, fluid taskbar effects with **low memory overhead** (~20 MB – 30 MB with full live hardware HUD), instant startup, and zero background I/O.
 
 ---
 
@@ -27,7 +27,7 @@ By interacting directly with the native Windows Shell diagnostics and taskbar ap
 
 | Metric / Feature | Standard TranslucentTB (Store/MSIX) | CleanTB (Rebuilt) |
 | :--- | :--- | :--- |
-| **Idle Memory (RAM)** | ~30 MB – 70 MB | **~3 MB – 5 MB** *(~90% reduction)* |
+| **Idle Memory (RAM)** | ~30 MB – 70 MB (no stats) | **~20 MB – 30 MB** *(including live Net/CPU/RAM/GPU HUD)* |
 | **UI Framework Overhead** | Heavy WinUI 3, XAML Islands, `Xaml.dll` | **Zero UI bloat** (pure Windows message pump) |
 | **Hardware Stats HUD** | Not available | **Single-line 100% transparent HUD (Net/CPU/RAM/GPU)** |
 | **Telemetry & Disk I/O** | Active (`ProgramLog.dll` writes to disk) | **Zero telemetry, 100% offline** |
@@ -56,7 +56,7 @@ By interacting directly with the native Windows Shell diagnostics and taskbar ap
   - Live **Network Download Speed** (`17 KB/s` by default, clean and arrow-free, or full upload/download with optional direction arrows).
   - Live **CPU %**, **RAM %**, and multi-engine **GPU 3D %** rendered in a clean, single horizontal line right next to your tray icons and system clock.
   - **100% Transparent Layered Canvas**: Direct Win32 32-bit ARGB layered rendering (`WS_EX_LAYERED` with `UpdateLayeredWindow`) with zero tint, zero background box, zero pill, and zero pink halos—numbers and text float directly over your wallpaper just like the native Windows 11 clock.
-  - **Aggressive Memory Trimming Engine**: Automatically trims unreferenced working set pages via `EmptyWorkingSet`, pinning active memory consumption down to **~3 MB – 5 MB RAM** with `< 0.1% CPU`.
+  - **Aggressive Memory Trimming Engine**: Automatically trims unreferenced working set pages via `EmptyWorkingSet`, pinning active memory consumption down to **~20 MB – 30 MB RAM** with `< 0.2% CPU`.
   - **Double-click** the stats HUD to instantly launch Windows Task Manager (`taskmgr.exe`).
   - **Drag & Drop** to reposition the HUD anywhere, or reset to auto-dock from the tray menu.
   - Fully customizable via System Tray: toggle individual metrics (Download Speed Only, Upload Speed, Direction Arrows, CPU, RAM, GPU), or turn on click-through mode.
@@ -92,7 +92,7 @@ CleanTB bypasses bulky UI frameworks by targeting Windows internal Shell interfa
 
 ```mermaid
 flowchart LR
-    A["CleanTB.exe (~5MB RAM)"] -->|"Injects & Queries"| B["ExplorerTAP.dll"]
+    A["CleanTB.exe (~20-30MB RAM)"] -->|"Injects & Queries"| B["ExplorerTAP.dll"]
     B -->|"ITaskbarAppearanceService"| C["Windows Explorer (Shell_TrayWnd)"]
     C -->|"DWM Direct Rendering"| D["Taskbar Visual (Clear / Blur / Acrylic)"]
 ```
