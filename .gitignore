@@ -3,6 +3,8 @@
 [Oo]bj/
 [Dd]ist/
 publish/
+publish_sc/
+Output/
 
 ## Visual Studio & IDE files
 .vs/
