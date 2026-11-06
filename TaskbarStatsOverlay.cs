@@ -175,6 +175,20 @@ public class TaskbarStatsOverlay : Form
     private readonly Font _fontRegular;
     private readonly Font _fontBold;
 
+    // Precomputed slot dimensions (Calculated once to eliminate per-second allocations)
+    private readonly float _speedBoxW;
+    private readonly float _percentBoxW;
+    private readonly float _cpuLabelW;
+    private readonly float _ramLabelW;
+    private readonly float _gpuLabelW;
+    private readonly float _arrowW;
+    private readonly float _upPrefixW;
+    private readonly float _dnPrefixW;
+
+    // Cached GDI bitmap and graphics context to eliminate per-second unmanaged heap churn
+    private Bitmap? _cachedBmp;
+    private Graphics? _cachedG;
+
     // Cached GDI tools to eliminate per-second allocations
     private readonly SolidBrush _brushVal = new(Color.FromArgb(255, 255, 255));
     private readonly SolidBrush _brushLabel = new(Color.FromArgb(175, 180, 190));
@@ -210,6 +224,21 @@ public class TaskbarStatsOverlay : Form
         // Clean typography matching Windows 11 system tray clock font size exactly (9pt Segoe UI Variable)
         _fontRegular = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
         _fontBold = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
+
+        // Precompute slot widths once at startup to completely avoid per-second allocations
+        using (var measureBmp = new Bitmap(1, 1))
+        using (var gMeasure = Graphics.FromImage(measureBmp))
+        {
+            gMeasure.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            _speedBoxW = Math.Max(gMeasure.MeasureString("999.9 MB/s", _fontRegular, PointF.Empty, _sf).Width + 2f, 58f);
+            _percentBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f, 28f);
+            _cpuLabelW = gMeasure.MeasureString("CPU", _fontBold, PointF.Empty, _sf).Width;
+            _ramLabelW = gMeasure.MeasureString("RAM", _fontBold, PointF.Empty, _sf).Width;
+            _gpuLabelW = gMeasure.MeasureString("GPU", _fontBold, PointF.Empty, _sf).Width;
+            _arrowW = gMeasure.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
+            _upPrefixW = gMeasure.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
+            _dnPrefixW = gMeasure.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width;
+        }
 
         Size = new Size(200, OVERLAY_HEIGHT);
 
@@ -542,39 +571,15 @@ public class TaskbarStatsOverlay : Form
 
             int h = OVERLAY_HEIGHT;
 
-            // 1. Determine fixed slot widths and module coordinates (Invariant to number changes!)
-            float speedBoxW;
-            float percentBoxW;
-            float cpuLabelW;
-            float ramLabelW;
-            float gpuLabelW;
-            float arrowW = 0f;
-            float upPrefixW = 0f;
-            float dnPrefixW = 0f;
-
-            using (var measureBmp = new Bitmap(1, 1))
-            using (var gMeasure = Graphics.FromImage(measureBmp))
-            {
-                gMeasure.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-
-                // Max possible string widths to guarantee slots never expand/shrink
-                speedBoxW = Math.Max(gMeasure.MeasureString("999.9 MB/s", _fontRegular, PointF.Empty, _sf).Width + 2f, 58f);
-                percentBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f, 28f);
-
-                cpuLabelW = gMeasure.MeasureString("CPU", _fontBold, PointF.Empty, _sf).Width;
-                ramLabelW = gMeasure.MeasureString("RAM", _fontBold, PointF.Empty, _sf).Width;
-                gpuLabelW = gMeasure.MeasureString("GPU", _fontBold, PointF.Empty, _sf).Width;
-
-                if (_config.ShowNetArrows)
-                {
-                    arrowW = gMeasure.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
-                }
-                else
-                {
-                    upPrefixW = gMeasure.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
-                    dnPrefixW = _config.ShowUploadSpeed ? gMeasure.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width : 0f;
-                }
-            }
+            // 1. Fixed slot widths and module coordinates (Invariant to number changes!)
+            float speedBoxW = _speedBoxW;
+            float percentBoxW = _percentBoxW;
+            float cpuLabelW = _cpuLabelW;
+            float ramLabelW = _ramLabelW;
+            float gpuLabelW = _gpuLabelW;
+            float arrowW = _config.ShowNetArrows ? _arrowW : 0f;
+            float upPrefixW = _config.ShowNetArrows ? 0f : _upPrefixW;
+            float dnPrefixW = _config.ShowNetArrows ? 0f : (_config.ShowUploadSpeed ? _dnPrefixW : 0f);
 
             const float labelGap = 3f;
             const float moduleGap = 8f;
@@ -648,85 +653,91 @@ public class TaskbarStatsOverlay : Form
 
             int w = Width;
 
-            // 2. Render to 32bpp alpha bitmap with fixed coordinates
-            using var bmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
-            using (var g = Graphics.FromImage(bmp))
+            // 2. Render to 32bpp alpha bitmap with fixed coordinates (reuse cached Bitmap/Graphics to avoid GC churn)
+            if (_cachedBmp == null || _cachedBmp.Width != w || _cachedBmp.Height != h)
             {
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                _cachedG?.Dispose();
+                _cachedBmp?.Dispose();
+                _cachedBmp = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
+                _cachedG = Graphics.FromImage(_cachedBmp);
+                _cachedG.SmoothingMode = SmoothingMode.AntiAlias;
+                _cachedG.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            }
 
-                // 100% transparent background - NO black tint, NO pill, NO box
-                g.Clear(Color.Transparent);
+            if (_cachedG == null || _cachedBmp == null) return;
+            var g = _cachedG;
 
-                float rowY = 5f;
+            // 100% transparent background - NO black tint, NO pill, NO box
+            g.Clear(Color.Transparent);
 
-                // --- Upload Speed ---
-                if (showUp)
+            float rowY = 5f;
+
+            // --- Upload Speed ---
+            if (showUp)
+            {
+                if (_config.ShowNetArrows)
                 {
-                    if (_config.ShowNetArrows)
-                    {
-                        g.DrawString("▲", _fontBold, _brushNetUp, upX, rowY, _sf);
-                    }
-                    else
-                    {
-                        g.DrawString("UP", _fontBold, _brushNetUp, upX, rowY, _sf);
-                    }
-
-                    var rectUp = new RectangleF(upValX, rowY, speedBoxW, 16f);
-                    g.DrawString(uploadStr, _fontRegular, _brushVal, rectUp, _sfRight);
+                    g.DrawString("▲", _fontBold, _brushNetUp, upX, rowY, _sf);
+                }
+                else
+                {
+                    g.DrawString("UP", _fontBold, _brushNetUp, upX, rowY, _sf);
                 }
 
-                // --- Download Speed ---
-                if (showDown)
-                {
-                    if (_config.ShowNetArrows)
-                    {
-                        g.DrawString("▼", _fontBold, _brushNetDown, downX, rowY, _sf);
-                    }
-                    else if (_config.ShowUploadSpeed)
-                    {
-                        g.DrawString("DN", _fontBold, _brushNetDown, downX, rowY, _sf);
-                    }
+                var rectUp = new RectangleF(upValX, rowY, speedBoxW, 16f);
+                g.DrawString(uploadStr, _fontRegular, _brushVal, rectUp, _sfRight);
+            }
 
-                    var rectDown = new RectangleF(downValX, rowY, speedBoxW, 16f);
-                    g.DrawString(downloadStr, _fontRegular, _brushVal, rectDown, _sfRight);
+            // --- Download Speed ---
+            if (showDown)
+            {
+                if (_config.ShowNetArrows)
+                {
+                    g.DrawString("▼", _fontBold, _brushNetDown, downX, rowY, _sf);
+                }
+                else if (_config.ShowUploadSpeed)
+                {
+                    g.DrawString("DN", _fontBold, _brushNetDown, downX, rowY, _sf);
                 }
 
-                // --- Divider ---
-                if (hasNet && hasHw)
-                {
-                    g.DrawLine(_penDivider, divLineX, rowY + 2f, divLineX, rowY + 14f);
-                }
+                var rectDown = new RectangleF(downValX, rowY, speedBoxW, 16f);
+                g.DrawString(downloadStr, _fontRegular, _brushVal, rectDown, _sfRight);
+            }
 
-                // --- CPU Usage ---
-                if (showCpu)
-                {
-                    g.DrawString("CPU", _fontBold, _brushLabel, cpuLblX, rowY, _sf);
-                    var rectCpu = new RectangleF(cpuValX, rowY, percentBoxW, 16f);
-                    g.DrawString(cpuStr, _fontRegular, _brushVal, rectCpu, _sfRight);
-                }
+            // --- Divider ---
+            if (hasNet && hasHw)
+            {
+                g.DrawLine(_penDivider, divLineX, rowY + 2f, divLineX, rowY + 14f);
+            }
 
-                // --- RAM Usage ---
-                if (showRam)
-                {
-                    g.DrawString("RAM", _fontBold, _brushLabel, ramLblX, rowY, _sf);
-                    var rectRam = new RectangleF(ramValX, rowY, percentBoxW, 16f);
-                    g.DrawString(ramStr, _fontRegular, _brushVal, rectRam, _sfRight);
-                }
+            // --- CPU Usage ---
+            if (showCpu)
+            {
+                g.DrawString("CPU", _fontBold, _brushLabel, cpuLblX, rowY, _sf);
+                var rectCpu = new RectangleF(cpuValX, rowY, percentBoxW, 16f);
+                g.DrawString(cpuStr, _fontRegular, _brushVal, rectCpu, _sfRight);
+            }
 
-                // --- GPU Usage ---
-                if (showGpu)
-                {
-                    g.DrawString("GPU", _fontBold, _brushLabel, gpuLblX, rowY, _sf);
-                    var rectGpu = new RectangleF(gpuValX, rowY, percentBoxW, 16f);
-                    g.DrawString(gpuStr, _fontRegular, _brushVal, rectGpu, _sfRight);
-                }
+            // --- RAM Usage ---
+            if (showRam)
+            {
+                g.DrawString("RAM", _fontBold, _brushLabel, ramLblX, rowY, _sf);
+                var rectRam = new RectangleF(ramValX, rowY, percentBoxW, 16f);
+                g.DrawString(ramStr, _fontRegular, _brushVal, rectRam, _sfRight);
+            }
+
+            // --- GPU Usage ---
+            if (showGpu)
+            {
+                g.DrawString("GPU", _fontBold, _brushLabel, gpuLblX, rowY, _sf);
+                var rectGpu = new RectangleF(gpuValX, rowY, percentBoxW, 16f);
+                g.DrawString(gpuStr, _fontRegular, _brushVal, rectGpu, _sfRight);
             }
 
             // 3. Update layered window with true 32bpp alpha bitmap
             IntPtr screenDc = GetDC(IntPtr.Zero);
             IntPtr memDc = CreateCompatibleDC(screenDc);
-            IntPtr hBitmap = bmp.GetHbitmap(Color.FromArgb(0));
+            IntPtr hBitmap = _cachedBmp.GetHbitmap(Color.FromArgb(0));
             IntPtr oldBitmap = SelectObject(memDc, hBitmap);
             try
             {
@@ -814,6 +825,9 @@ public class TaskbarStatsOverlay : Form
             _brushNetUp?.Dispose();
             _penDivider?.Dispose();
             _sf?.Dispose();
+            _sfRight?.Dispose();
+            _cachedG?.Dispose();
+            _cachedBmp?.Dispose();
         }
         base.Dispose(disposing);
     }

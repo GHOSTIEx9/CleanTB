@@ -12,6 +12,8 @@
     <AssemblyName>CleanTB</AssemblyName>
     <RootNamespace>CleanTB</RootNamespace>
     <PublishSingleFile>false</PublishSingleFile>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
