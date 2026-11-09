@@ -1,5 +1,5 @@
 #define MyAppName "CleanTB"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define MyAppPublisher "CleanTB"
 #define MyAppURL "https://github.com/GHOSTIEx9/CleanTB"
 #define MyAppExeName "CleanTB.exe"
@@ -33,7 +33,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "publish\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "publish_sc\CleanTB.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "publish\ExplorerTAP.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "publish\ExplorerHooks.dll"; DestDir: "{app}"; Flags: ignoreversion
+Source: "publish\config.json"; DestDir: "{app}"; Flags: ignoreversion
+Source: "publish\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"
