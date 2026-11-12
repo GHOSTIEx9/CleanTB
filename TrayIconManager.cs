@@ -31,6 +31,9 @@ public class TrayIconManager : IDisposable
     // Menu items - Hardware Stats
     private ToolStripMenuItem _menuHardwareStats = null!;
     private ToolStripMenuItem _itemStatsEnable = null!;
+    private ToolStripMenuItem _menuStatsPosition = null!;
+    private ToolStripMenuItem _itemStatsPosLeft = null!;
+    private ToolStripMenuItem _itemStatsPosRight = null!;
     private ToolStripMenuItem _itemStatsDownload = null!;
     private ToolStripMenuItem _itemStatsUpload = null!;
     private ToolStripMenuItem _itemStatsNetArrows = null!;
@@ -145,6 +148,24 @@ public class TrayIconManager : IDisposable
             }
         });
 
+        // Position Submenu
+        _menuStatsPosition = new ToolStripMenuItem("Position");
+        _itemStatsPosLeft = new ToolStripMenuItem("Left Side (Empty Taskbar)", null, (s, e) =>
+        {
+            _statsOverlay.SetDockPosition(StatsPosition.Left);
+            UpdateMenuStates();
+        });
+        _itemStatsPosRight = new ToolStripMenuItem("Right Side (System Tray)", null, (s, e) =>
+        {
+            _statsOverlay.SetDockPosition(StatsPosition.Right);
+            UpdateMenuStates();
+        });
+        _menuStatsPosition.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _itemStatsPosLeft,
+            _itemStatsPosRight
+        });
+
         _itemStatsDownload = new ToolStripMenuItem("Show Download Speed Only", null, (s, e) =>
         {
             _config.ShowDownloadOnly = !_config.ShowDownloadOnly;
@@ -216,6 +237,8 @@ public class TrayIconManager : IDisposable
         {
             _itemStatsEnable,
             new ToolStripSeparator(),
+            _menuStatsPosition,
+            new ToolStripSeparator(),
             _itemStatsDownload,
             _itemStatsUpload,
             _itemStatsNetArrows,
@@ -267,13 +290,15 @@ public class TrayIconManager : IDisposable
         {
             MessageBox.Show(
                 "CleanTB - Ultra-lightweight, bloat-free Windows 11 Taskbar Customizer.\n\n" +
-                "• Memory: ~3 MB - 5 MB active RAM\n" +
+                "• Memory: ~12 MB - 15 MB active RAM\n" +
                 "• CPU: < 0.1% usage\n" +
                 "• Real-time Taskbar Download, Upload, CPU, RAM, & GPU HUD\n" +
+                "• Move HUD to Left (empty space) or Right (tray)\n" +
                 "• No telemetry, no logs, pure native Win32 APIs\n\n" +
                 "Tips:\n" +
                 "• Left-click tray icon to toggle Clear / Default.\n" +
                 "• Double-click the taskbar stats HUD to open Task Manager.\n" +
+                "• Choose Left or Right side docking from the Position menu.\n" +
                 "• Drag the stats HUD to place it anywhere on screen.",
                 "About CleanTB",
                 MessageBoxButtons.OK,
@@ -312,6 +337,27 @@ public class TrayIconManager : IDisposable
         _itemNormal.Checked = _config.Mode == TaskbarMode.Normal;
 
         _itemStatsEnable.Checked = _config.ShowHardwareStats;
+        _menuStatsPosition.Enabled = _config.ShowHardwareStats;
+
+        if (_config.StatsCustomX.HasValue)
+        {
+            _menuStatsPosition.Text = "Position (Custom Drag)";
+            _itemStatsPosLeft.Checked = false;
+            _itemStatsPosRight.Checked = false;
+        }
+        else if (_config.StatsPosition == StatsPosition.Left)
+        {
+            _menuStatsPosition.Text = "Position: Left Side";
+            _itemStatsPosLeft.Checked = true;
+            _itemStatsPosRight.Checked = false;
+        }
+        else
+        {
+            _menuStatsPosition.Text = "Position: Right Side";
+            _itemStatsPosLeft.Checked = false;
+            _itemStatsPosRight.Checked = true;
+        }
+
         _itemStatsDownload.Checked = _config.ShowDownloadOnly;
         _itemStatsUpload.Checked = _config.ShowUploadSpeed;
         _itemStatsNetArrows.Checked = _config.ShowNetArrows;

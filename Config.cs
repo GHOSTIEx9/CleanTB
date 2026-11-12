@@ -14,6 +14,12 @@ public enum TaskbarMode
     Normal = 5
 }
 
+public enum StatsPosition
+{
+    Right = 0,
+    Left = 1
+}
+
 public class AppConfig
 {
     public TaskbarMode Mode { get; set; } = TaskbarMode.Clear;
@@ -22,6 +28,7 @@ public class AppConfig
 
     // Hardware Stats Display Settings
     public bool ShowHardwareStats { get; set; } = true;
+    public StatsPosition StatsPosition { get; set; } = StatsPosition.Right;
     public bool ShowDownloadOnly { get; set; } = true;
     public bool ShowUploadSpeed { get; set; } = false;
     public bool ShowNetArrows { get; set; } = false;

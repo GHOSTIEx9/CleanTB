@@ -516,8 +516,28 @@ public class TaskbarStatsOverlay : Form
 
         if (_config.StatsCustomX.HasValue && _config.StatsCustomY.HasValue)
         {
-            Location = new Point(_config.StatsCustomX.Value, _config.StatsCustomY.Value);
-            return;
+            Point customPt = new Point(_config.StatsCustomX.Value, _config.StatsCustomY.Value);
+            bool onScreen = false;
+            foreach (var screen in Screen.AllScreens)
+            {
+                if (screen.Bounds.Contains(customPt))
+                {
+                    onScreen = true;
+                    break;
+                }
+            }
+
+            if (onScreen)
+            {
+                Location = customPt;
+                return;
+            }
+            else
+            {
+                _config.StatsCustomX = null;
+                _config.StatsCustomY = null;
+                _config.Save();
+            }
         }
 
         IntPtr hTray = FindWindow("Shell_TrayWnd", null);
@@ -525,19 +545,29 @@ public class TaskbarStatsOverlay : Form
 
         if (GetWindowRect(hTray, out RECT trayRect))
         {
-            IntPtr hNotify = FindWindowEx(hTray, IntPtr.Zero, "TrayNotifyWnd", null);
             int targetX;
-            int targetY;
+            int targetY = trayRect.Top + (trayRect.Height - Height) / 2;
 
-            if (hNotify != IntPtr.Zero && GetWindowRect(hNotify, out RECT notifyRect))
+            if (_config.StatsPosition == StatsPosition.Left)
             {
-                targetX = notifyRect.Left - Width - 12;
-                targetY = trayRect.Top + (trayRect.Height - Height) / 2;
+                int leftOffset = 16;
+                if (IsWidgetsOnLeft())
+                {
+                    leftOffset = 165;
+                }
+                targetX = trayRect.Left + leftOffset;
             }
             else
             {
-                targetX = trayRect.Right - Width - 140;
-                targetY = trayRect.Top + (trayRect.Height - Height) / 2;
+                IntPtr hNotify = FindWindowEx(hTray, IntPtr.Zero, "TrayNotifyWnd", null);
+                if (hNotify != IntPtr.Zero && GetWindowRect(hNotify, out RECT notifyRect))
+                {
+                    targetX = notifyRect.Left - Width - 12;
+                }
+                else
+                {
+                    targetX = trayRect.Right - Width - 140;
+                }
             }
 
             if (Location.X != targetX || Location.Y != targetY)
@@ -545,6 +575,34 @@ public class TaskbarStatsOverlay : Form
                 Location = new Point(targetX, targetY);
             }
         }
+    }
+
+    private static bool IsWidgetsOnLeft()
+    {
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced");
+            if (key != null)
+            {
+                object? alObj = key.GetValue("TaskbarAl");
+                object? daObj = key.GetValue("TaskbarDa");
+                int taskbarAl = alObj is int al ? al : 1;
+                int taskbarDa = daObj is int da ? da : 0;
+                return taskbarAl == 1 && taskbarDa == 1;
+            }
+        }
+        catch { }
+        return false;
+    }
+
+    public void SetDockPosition(StatsPosition position)
+    {
+        _config.StatsPosition = position;
+        _config.StatsCustomX = null;
+        _config.StatsCustomY = null;
+        _config.Save();
+        UpdateDockPosition(force: true);
+        CheckVisibilityAndRender();
     }
 
     public void ResetPosition()
