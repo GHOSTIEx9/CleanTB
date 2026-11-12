@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Net.NetworkInformation;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -46,55 +48,6 @@ public class HardwareMonitor : IDisposable
 
     [DllImport("psapi.dll", SetLastError = true)]
     private static extern bool EmptyWorkingSet(IntPtr hProcess);
-
-    // --- Native IpHlpApi for ultra-lightweight network throughput (Zero managed allocations) ---
-    [DllImport("iphlpapi.dll", ExactSpelling = true)]
-    private static extern int GetIfTable2(out IntPtr pIfTable);
-
-    [DllImport("iphlpapi.dll", ExactSpelling = true)]
-    private static extern void FreeMibTable(IntPtr pIfTable);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MIB_IF_ROW2_HEADER
-    {
-        public ulong InterfaceLuid;
-        public uint InterfaceIndex;
-        public Guid InterfaceGuid;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
-        public string Alias;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
-        public string Description;
-        public uint PhysicalAddressLength;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
-        public byte[] PhysicalAddress;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
-        public byte[] PermanentPhysicalAddress;
-        public uint Mtu;
-        public uint Type;
-        public int TunnelType;
-        public uint MediaType;
-        public uint PhysicalMediumType;
-        public int AccessType;
-        public int DirectionType;
-        public byte InterfaceAndOperStatusFlags;
-        public int OperStatus;
-        public int AdminStatus;
-        public int MediaConnectState;
-        public Guid NetworkGuid;
-        public int ConnectionType;
-        public ulong TransmitLinkSpeed;
-        public ulong ReceiveLinkSpeed;
-        public ulong InOctets;
-        public ulong InUcastPkts;
-        public ulong InNUcastPkts;
-        public ulong InDiscards;
-        public ulong InErrors;
-        public ulong InUnknownProtos;
-        public ulong InUcastOctets;
-        public ulong InMulticastOctets;
-        public ulong InBroadcastOctets;
-        public ulong OutOctets;
-    }
 
     // --- Native PDH for ultra-low memory GPU Monitoring ---
     private const uint PDH_FMT_DOUBLE = 0x00000200;
@@ -153,6 +106,10 @@ public class HardwareMonitor : IDisposable
     private bool _isFirstSample = true;
     private int _tickCount = 0;
 
+    // Cached network interfaces to eliminate per-second allocations
+    private NetworkInterface[]? _cachedInterfaces;
+    private DateTime _lastInterfaceRefresh = DateTime.MinValue;
+
     // Native GPU query handles (zero .NET PerformanceCounter overhead)
     private IntPtr _hGpuQuery = IntPtr.Zero;
     private IntPtr _hGpuCounter = IntPtr.Zero;
@@ -174,7 +131,7 @@ public class HardwareMonitor : IDisposable
         }
 
         // Initialize Net baseline
-        GetTotalNetworkBytesNative(out _prevBytesReceived, out _prevBytesSent);
+        GetTotalNetworkBytes(out _prevBytesReceived, out _prevBytesSent);
         _prevNetCheckTime = DateTime.UtcNow;
 
         // Poll every 1000ms
@@ -222,12 +179,12 @@ public class HardwareMonitor : IDisposable
                 ramUsedGB = (_memStatus.ullTotalPhys - _memStatus.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
             }
 
-            // 3. Network Speed Measurement (Native GetIfTable2: ~0.001ms, 0 managed heap allocations)
+            // 3. Network Speed Measurement (Reliable .NET NetworkInterface with caching)
             DateTime now = DateTime.UtcNow;
             double elapsedSeconds = (now - _prevNetCheckTime).TotalSeconds;
             if (elapsedSeconds < 0.2) elapsedSeconds = 1.0;
 
-            GetTotalNetworkBytesNative(out long currentBytesReceived, out long currentBytesSent);
+            GetTotalNetworkBytes(out long currentBytesReceived, out long currentBytesSent);
 
             long downloadSpeedBps = 0;
             long uploadSpeedBps = 0;
@@ -282,43 +239,56 @@ public class HardwareMonitor : IDisposable
         catch { }
     }
 
-    private static void GetTotalNetworkBytesNative(out long totalReceived, out long totalSent)
+    private void RefreshNetworkInterfacesIfNeeded(bool force = false)
+    {
+        if (force || _cachedInterfaces == null || _cachedInterfaces.Length == 0 || (DateTime.UtcNow - _lastInterfaceRefresh).TotalSeconds > 30)
+        {
+            try
+            {
+                var list = new List<NetworkInterface>();
+                foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (iface.OperationalStatus == OperationalStatus.Up &&
+                        iface.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
+                        iface.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
+                    {
+                        list.Add(iface);
+                    }
+                }
+                _cachedInterfaces = list.ToArray();
+                _lastInterfaceRefresh = DateTime.UtcNow;
+            }
+            catch { }
+        }
+    }
+
+    private void GetTotalNetworkBytes(out long totalReceived, out long totalSent)
     {
         totalReceived = 0;
         totalSent = 0;
 
-        try
+        RefreshNetworkInterfacesIfNeeded();
+        if (_cachedInterfaces == null || _cachedInterfaces.Length == 0)
         {
-            if (GetIfTable2(out IntPtr pTable) == 0 && pTable != IntPtr.Zero)
+            RefreshNetworkInterfacesIfNeeded(force: true);
+        }
+
+        if (_cachedInterfaces == null) return;
+
+        foreach (var iface in _cachedInterfaces)
+        {
+            try
             {
-                try
-                {
-                    uint numEntries = (uint)Marshal.ReadInt32(pTable);
-                    IntPtr rowPtr = IntPtr.Add(pTable, sizeof(uint) + (IntPtr.Size == 8 ? 4 : 0)); // Align past NumEntries
-
-                    int rowSize = Marshal.SizeOf<MIB_IF_ROW2_HEADER>();
-                    for (int i = 0; i < numEntries; i++)
-                    {
-                        var row = Marshal.PtrToStructure<MIB_IF_ROW2_HEADER>(rowPtr);
-                        
-                        // IF_TYPE_SOFTWARE_LOOPBACK = 24, IF_TYPE_TUNNEL = 131
-                        // IF_OPER_STATUS_OPERATIONAL = 1
-                        if (row.Type != 24 && row.Type != 131 && row.OperStatus == 1)
-                        {
-                            totalReceived += (long)row.InOctets;
-                            totalSent += (long)row.OutOctets;
-                        }
-
-                        rowPtr = IntPtr.Add(rowPtr, 1360); // Size of full MIB_IF_ROW2 struct in Windows SDK
-                    }
-                }
-                finally
-                {
-                    FreeMibTable(pTable);
-                }
+                var stats = iface.GetIPStatistics();
+                totalReceived += stats.BytesReceived;
+                totalSent += stats.BytesSent;
+            }
+            catch
+            {
+                // Invalidate cache if an adapter state changed
+                _lastInterfaceRefresh = DateTime.MinValue;
             }
         }
-        catch { }
     }
 
     private int SampleGpuUsageNative()
