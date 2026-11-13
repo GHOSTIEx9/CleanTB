@@ -31,7 +31,6 @@ public class TrayIconManager : IDisposable
     // Menu items - Hardware Stats
     private ToolStripMenuItem _menuHardwareStats = null!;
     private ToolStripMenuItem _itemStatsEnable = null!;
-    private ToolStripMenuItem _menuStatsPosition = null!;
     private ToolStripMenuItem _itemStatsPosLeft = null!;
     private ToolStripMenuItem _itemStatsPosRight = null!;
     private ToolStripMenuItem _itemStatsDownload = null!;
@@ -148,22 +147,16 @@ public class TrayIconManager : IDisposable
             }
         });
 
-        // Position Submenu
-        _menuStatsPosition = new ToolStripMenuItem("Position");
-        _itemStatsPosLeft = new ToolStripMenuItem("Left Side (Empty Taskbar)", null, (s, e) =>
+        // Dock Position Items
+        _itemStatsPosLeft = new ToolStripMenuItem("Dock to Left Side (Empty Taskbar)", null, (s, e) =>
         {
             _statsOverlay.SetDockPosition(StatsPosition.Left);
             UpdateMenuStates();
         });
-        _itemStatsPosRight = new ToolStripMenuItem("Right Side (System Tray)", null, (s, e) =>
+        _itemStatsPosRight = new ToolStripMenuItem("Dock to Right Side (System Tray)", null, (s, e) =>
         {
             _statsOverlay.SetDockPosition(StatsPosition.Right);
             UpdateMenuStates();
-        });
-        _menuStatsPosition.DropDownItems.AddRange(new ToolStripItem[]
-        {
-            _itemStatsPosLeft,
-            _itemStatsPosRight
         });
 
         _itemStatsDownload = new ToolStripMenuItem("Show Download Speed Only", null, (s, e) =>
@@ -237,7 +230,8 @@ public class TrayIconManager : IDisposable
         {
             _itemStatsEnable,
             new ToolStripSeparator(),
-            _menuStatsPosition,
+            _itemStatsPosLeft,
+            _itemStatsPosRight,
             new ToolStripSeparator(),
             _itemStatsDownload,
             _itemStatsUpload,
@@ -337,25 +331,18 @@ public class TrayIconManager : IDisposable
         _itemNormal.Checked = _config.Mode == TaskbarMode.Normal;
 
         _itemStatsEnable.Checked = _config.ShowHardwareStats;
-        _menuStatsPosition.Enabled = _config.ShowHardwareStats;
+        _itemStatsPosLeft.Enabled = _config.ShowHardwareStats;
+        _itemStatsPosRight.Enabled = _config.ShowHardwareStats;
 
         if (_config.StatsCustomX.HasValue)
         {
-            _menuStatsPosition.Text = "Position (Custom Drag)";
             _itemStatsPosLeft.Checked = false;
-            _itemStatsPosRight.Checked = false;
-        }
-        else if (_config.StatsPosition == StatsPosition.Left)
-        {
-            _menuStatsPosition.Text = "Position: Left Side";
-            _itemStatsPosLeft.Checked = true;
             _itemStatsPosRight.Checked = false;
         }
         else
         {
-            _menuStatsPosition.Text = "Position: Right Side";
-            _itemStatsPosLeft.Checked = false;
-            _itemStatsPosRight.Checked = true;
+            _itemStatsPosLeft.Checked = (_config.StatsPosition == StatsPosition.Left);
+            _itemStatsPosRight.Checked = (_config.StatsPosition == StatsPosition.Right);
         }
 
         _itemStatsDownload.Checked = _config.ShowDownloadOnly;

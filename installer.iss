@@ -15,6 +15,7 @@ AppUpdatesURL={#MyAppURL}/releases
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+UsePreviousAppDir=no
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
@@ -25,6 +26,8 @@ RestartApplications=no
 OutputDir=.
 OutputBaseFilename=CleanTB-Setup
 SetupIconFile=app.ico
+UninstallDisplayName={#MyAppName}
+UninstallDisplayIcon={app}\app.ico
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
@@ -42,10 +45,45 @@ Source: "publish\ExplorerHooks.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "publish\config.json"; DestDir: "{app}"; Flags: ignoreversion
 Source: "publish\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
+[InstallDelete]
+; Delete any legacy or duplicate uninstallers and logs
+Type: files; Name: "{app}\unins*.exe"
+Type: files; Name: "{app}\unins*.dat"
+Type: files; Name: "{app}\uninstaller.exe"
+Type: files; Name: "{app}\crash.log"
+Type: files; Name: "{app}\stderr.log"
+Type: files; Name: "{app}\stdout.log"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"
-Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"; IconFilename: "{app}\app.ico"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  // Terminate any running CleanTB instance so files can be updated cleanly
+  Exec('taskkill.exe', '/F /IM CleanTB.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+  begin
+    // Double ensure all previous uninstaller and log files are deleted before new install starts
+    DeleteFile(ExpandConstant('{app}\unins000.exe'));
+    DeleteFile(ExpandConstant('{app}\unins000.dat'));
+    DeleteFile(ExpandConstant('{app}\unins001.exe'));
+    DeleteFile(ExpandConstant('{app}\unins001.dat'));
+    DeleteFile(ExpandConstant('{app}\uninstaller.exe'));
+    DeleteFile(ExpandConstant('{app}\crash.log'));
+    DeleteFile(ExpandConstant('{app}\stderr.log'));
+    DeleteFile(ExpandConstant('{app}\stdout.log'));
+  end;
+end;
