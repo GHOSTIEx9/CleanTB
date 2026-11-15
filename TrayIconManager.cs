@@ -95,6 +95,7 @@ public class TrayIconManager : IDisposable
         });
 
         // Apply saved configuration on startup
+        EnsureCorrectStartupPath();
         UpdateMenuStates();
         _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
     }
@@ -384,6 +385,25 @@ public class TrayIconManager : IDisposable
             else
             {
                 key.DeleteValue("CleanTB", false);
+            }
+        }
+        catch { }
+    }
+
+    private static void EnsureCorrectStartupPath()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", true);
+            if (key == null) return;
+
+            var currentVal = key.GetValue("CleanTB") as string;
+            if (string.IsNullOrEmpty(currentVal)) return;
+
+            string expectedVal = $"\"{Application.ExecutablePath}\"";
+            if (!string.Equals(currentVal.Trim('\"'), Application.ExecutablePath, StringComparison.OrdinalIgnoreCase))
+            {
+                key.SetValue("CleanTB", expectedVal);
             }
         }
         catch { }

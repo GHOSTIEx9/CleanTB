@@ -86,4 +86,12 @@ begin
     DeleteFile(ExpandConstant('{app}\stderr.log'));
     DeleteFile(ExpandConstant('{app}\stdout.log'));
   end;
+  if CurStep = ssPostInstall then
+  begin
+    // If CleanTB is already configured to start on Windows boot, update the path to the newly installed app
+    if RegValueExists(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'CleanTB') then
+    begin
+      RegWriteStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'CleanTB', '"' + ExpandConstant('{app}\CleanTB.exe') + '"');
+    end;
+  end;
 end;
