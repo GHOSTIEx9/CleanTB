@@ -21,7 +21,7 @@ PrivilegesRequiredOverridesAllowed=commandline
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
-CloseApplications=no
+CloseApplications=force
 RestartApplications=no
 OutputDir=.
 OutputBaseFilename=CleanTB-Setup
@@ -45,11 +45,11 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "publish_sc\CleanTB.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "publish\ExplorerTAP.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "publish\ExplorerHooks.dll"; DestDir: "{app}"; Flags: ignoreversion
-Source: "publish\config.json"; DestDir: "{app}"; Flags: ignoreversion
-Source: "publish\app.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "publish_sc\CleanTB.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "publish\ExplorerTAP.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "publish\ExplorerHooks.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "publish\config.json"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "publish\app.ico"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 
 [InstallDelete]
 ; Delete any legacy or duplicate uninstallers and logs
@@ -74,7 +74,8 @@ var
   ResultCode: Integer;
 begin
   // Terminate any running CleanTB instance so files can be updated cleanly
-  Exec('taskkill.exe', '/F /IM CleanTB.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM CleanTB.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(500);
   Result := '';
 end;
 
