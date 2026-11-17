@@ -64,8 +64,8 @@ public class PeripheralBatteryMonitor : IDisposable
     public PeripheralBatteryMonitor(AppConfig config)
     {
         _config = config;
-        // Poll every 20 seconds to keep CPU at 0.0% while keeping battery data fresh
-        _pollTimer = new Timer(OnPollTick, null, 1000, 20000);
+        // Poll every 15 seconds to keep CPU at 0.0% while keeping battery data fresh
+        _pollTimer = new Timer(OnPollTick, null, 1000, 15000);
     }
 
     public List<BatteryDeviceInfo> GetCurrentDevices()
@@ -117,6 +117,13 @@ public class PeripheralBatteryMonitor : IDisposable
             try
             {
                 await PollBleDevicesAsync(found);
+            }
+            catch { }
+
+            // 3. Query Windows Runtime Bluetooth Classic Devices (BTH Audio, Headsets, Mice, Keyboards)
+            try
+            {
+                await PollClassicBluetoothDevicesAsync(found);
             }
             catch { }
 
@@ -203,7 +210,6 @@ public class PeripheralBatteryMonitor : IDisposable
                 var sResult = await ble.GetGattServicesForUuidAsync(GattServiceUuids.Battery, BluetoothCacheMode.Uncached);
                 if (sResult.Status != GattCommunicationStatus.Success || sResult.Services.Count == 0)
                 {
-                    // Fall back to cached if uncached fails
                     sResult = await ble.GetGattServicesForUuidAsync(GattServiceUuids.Battery, BluetoothCacheMode.Cached);
                 }
 
@@ -246,6 +252,87 @@ public class PeripheralBatteryMonitor : IDisposable
         }
     }
 
+    private async Task PollClassicBluetoothDevicesAsync(List<BatteryDeviceInfo> list)
+    {
+        string aqs = BluetoothDevice.GetDeviceSelectorFromPairingState(true);
+        var devices = await DeviceInformation.FindAllAsync(aqs, new[] {
+            "System.ItemNameDisplay",
+            "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2",
+            "System.Devices.Aep.IsConnected"
+        });
+
+        foreach (var devInfo in devices)
+        {
+            try
+            {
+                using var bth = await BluetoothDevice.FromIdAsync(devInfo.Id);
+                if (bth == null) continue;
+
+                bool isConnected = bth.ConnectionStatus == BluetoothConnectionStatus.Connected;
+                if (!isConnected && devInfo.Properties.TryGetValue("System.Devices.Aep.IsConnected", out var connVal) && connVal is bool bConn)
+                {
+                    isConnected = bConn;
+                }
+
+                if (isConnected)
+                {
+                    string name = string.IsNullOrWhiteSpace(bth.Name) ? devInfo.Name : bth.Name;
+                    var type = ClassifyDevice(name);
+
+                    // If classified as Other, check Bluetooth ClassOfDevice
+                    if (type == PeripheralType.Other)
+                    {
+                        if (bth.ClassOfDevice.MajorClass == BluetoothMajorClass.AudioVideo)
+                        {
+                            type = PeripheralType.Headphones;
+                        }
+                        else if (bth.ClassOfDevice.MajorClass == BluetoothMajorClass.Peripheral)
+                        {
+                            uint minor = (uint)bth.ClassOfDevice.MinorClass;
+                            if ((minor & 0x80) != 0) type = PeripheralType.Mouse;
+                            else if ((minor & 0x40) != 0) type = PeripheralType.Keyboard;
+                        }
+                    }
+
+                    int batteryPercent = -1;
+                    if (devInfo.Properties.TryGetValue("{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2", out var batVal) && batVal != null)
+                    {
+                        if (batVal is byte b) batteryPercent = b;
+                        else if (batVal is int i) batteryPercent = i;
+                        else if (batVal is uint u) batteryPercent = (int)u;
+                    }
+
+                    // Avoid duplicate if already reported by BLE
+                    int existingIdx = list.FindIndex(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
+                    if (existingIdx >= 0)
+                    {
+                        if (batteryPercent >= 0 && list[existingIdx].BatteryPercent < 0)
+                        {
+                            list[existingIdx] = new BatteryDeviceInfo(
+                                bth.DeviceId,
+                                name,
+                                type,
+                                batteryPercent,
+                                true
+                            );
+                        }
+                    }
+                    else
+                    {
+                        list.Add(new BatteryDeviceInfo(
+                            bth.DeviceId,
+                            name,
+                            type,
+                            batteryPercent,
+                            true
+                        ));
+                    }
+                }
+            }
+            catch { }
+        }
+    }
+
     public static PeripheralType ClassifyDevice(string name)
     {
         if (string.IsNullOrWhiteSpace(name))
@@ -256,9 +343,13 @@ public class PeripheralBatteryMonitor : IDisposable
         // Mouse detection
         if (lower.Contains("mouse") || lower.Contains("viper") || lower.Contains("deathadder") ||
             lower.Contains("basilisk") || lower.Contains("g304") || lower.Contains("g502") ||
-            lower.Contains("g pro") || lower.Contains("mx master") || lower.Contains("trackball") ||
-            lower.Contains("touchpad") || lower.Contains("pulsar") || lower.Contains("aerox") ||
-            lower.Contains("scimitar") || lower.Contains("gladius"))
+            lower.Contains("g pro") || lower.Contains("g305") || lower.Contains("g703") ||
+            lower.Contains("g903") || lower.Contains("superlight") || lower.Contains("mx master") ||
+            lower.Contains("mx anywhere") || lower.Contains("trackball") || lower.Contains("touchpad") ||
+            lower.Contains("pulsar") || lower.Contains("aerox") || lower.Contains("scimitar") ||
+            lower.Contains("gladius") || lower.Contains("orochi") || lower.Contains("katar") ||
+            lower.Contains("harpoon") || lower.Contains("dark core") || lower.Contains("ironclaw") ||
+            lower.Contains("mamba") || lower.Contains("rival") || lower.Contains("prime"))
         {
             return PeripheralType.Mouse;
         }
@@ -268,7 +359,10 @@ public class PeripheralBatteryMonitor : IDisposable
             lower.Contains("k8") || lower.Contains("k2") || lower.Contains("blackwidow") ||
             lower.Contains("huntsman") || lower.Contains("g915") || lower.Contains("g815") ||
             lower.Contains("mx keys") || lower.Contains("apex") || lower.Contains("ducky") ||
-            lower.Contains("filco") || lower.Contains("k70") || lower.Contains("k65"))
+            lower.Contains("filco") || lower.Contains("k70") || lower.Contains("k65") ||
+            lower.Contains("k100") || lower.Contains("deathstalker") || lower.Contains("anne pro") ||
+            lower.Contains("rk61") || lower.Contains("rk84") || lower.Contains("nuphy") ||
+            lower.Contains("epomaker"))
         {
             return PeripheralType.Keyboard;
         }
@@ -276,11 +370,16 @@ public class PeripheralBatteryMonitor : IDisposable
         // Headphone / Headset / Earbuds detection
         if (lower.Contains("headset") || lower.Contains("headphone") || lower.Contains("earphone") ||
             lower.Contains("buds") || lower.Contains("airpod") || lower.Contains("wh-1000") ||
-            lower.Contains("soundcore") || lower.Contains("g435") || lower.Contains("arctis") ||
-            lower.Contains("audio") || lower.Contains("speaker") || lower.Contains("soundbar") ||
-            lower.Contains("freebuds") || lower.Contains("shokz") || lower.Contains("airopes") ||
-            lower.Contains("airdopes") || lower.Contains("luna") || lower.Contains("astra") ||
-            lower.Contains("earbuds") || lower.Contains("qc35") || lower.Contains("qc45"))
+            lower.Contains("wf-1000") || lower.Contains("soundcore") || lower.Contains("g435") ||
+            lower.Contains("arctis") || lower.Contains("audio") || lower.Contains("speaker") ||
+            lower.Contains("soundbar") || lower.Contains("freebuds") || lower.Contains("shokz") ||
+            lower.Contains("airopes") || lower.Contains("airdopes") || lower.Contains("luna") ||
+            lower.Contains("astra") || lower.Contains("earbuds") || lower.Contains("qc35") ||
+            lower.Contains("qc45") || lower.Contains("bose") || lower.Contains("jbl") ||
+            lower.Contains("sennheiser") || lower.Contains("beats") || lower.Contains("hyperx") ||
+            lower.Contains("cloud") || lower.Contains("kraken") || lower.Contains("blackshark") ||
+            lower.Contains("barracuda") || lower.Contains("virtuoso") || lower.Contains("void") ||
+            lower.Contains("hs70") || lower.Contains("hs80") || lower.Contains("quantum"))
         {
             return PeripheralType.Headphones;
         }
@@ -288,7 +387,9 @@ public class PeripheralBatteryMonitor : IDisposable
         // Controller detection
         if (lower.Contains("controller") || lower.Contains("gamepad") || lower.Contains("xbox") ||
             lower.Contains("dualsense") || lower.Contains("dualshock") || lower.Contains("joy-con") ||
-            lower.Contains("switch pro") || lower.Contains("stadia"))
+            lower.Contains("switch pro") || lower.Contains("stadia") || lower.Contains("flydigi") ||
+            lower.Contains("gamesir") || lower.Contains("8bitdo") || lower.Contains("gulikit") ||
+            lower.Contains("wolverine") || lower.Contains("scuf"))
         {
             return PeripheralType.Controller;
         }

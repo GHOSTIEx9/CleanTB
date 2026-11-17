@@ -131,6 +131,9 @@ public class TaskbarStatsOverlay : Form
     [DllImport("dwmapi.dll")]
     private static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
 
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hWnd);
+
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
     private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
 
@@ -173,21 +176,23 @@ public class TaskbarStatsOverlay : Form
     private Point _dragStartCursor;
     private Point _dragStartForm;
 
-    private readonly Font _fontRegular;
-    private readonly Font _fontBold;
-    private readonly Font _fontGlyph;
+    private Font _fontRegular = null!;
+    private Font _fontBold = null!;
+    private Font _fontGlyph = null!;
+    private float _dpiScale = 1.0f;
+    private float _fontLineHeight = 16f;
 
-    // Precomputed slot dimensions (Calculated once to eliminate per-second allocations)
-    private readonly float _speedBoxW;
-    private readonly float _percentBoxW;
-    private readonly float _cpuLabelW;
-    private readonly float _ramLabelW;
-    private readonly float _gpuLabelW;
-    private readonly float _arrowW;
-    private readonly float _upPrefixW;
-    private readonly float _dnPrefixW;
-    private readonly float _glyphBoxW;
-    private readonly float _batBoxW;
+    // Precomputed slot dimensions (Calculated dynamically per DPI scale)
+    private float _speedBoxW;
+    private float _percentBoxW;
+    private float _cpuLabelW;
+    private float _ramLabelW;
+    private float _gpuLabelW;
+    private float _arrowW;
+    private float _upPrefixW;
+    private float _dnPrefixW;
+    private float _glyphBoxW;
+    private float _batBoxW;
 
     // Cached GDI bitmap and graphics context to eliminate per-second unmanaged heap churn
     private Bitmap? _cachedBmp;
@@ -199,6 +204,8 @@ public class TaskbarStatsOverlay : Form
     private readonly SolidBrush _brushNetDown = new(Color.FromArgb(0, 225, 255));
     private readonly SolidBrush _brushNetUp = new(Color.FromArgb(255, 185, 80));
     private readonly Pen _penDivider = new(Color.FromArgb(60, 255, 255, 255), 1f);
+    private readonly SolidBrush _brushShadow = new(Color.FromArgb(160, 0, 0, 0));
+    private readonly Pen _penShadowDivider = new(Color.FromArgb(80, 0, 0, 0), 1f);
     private readonly StringFormat _sf = new(StringFormat.GenericTypographic)
     {
         FormatFlags = StringFormatFlags.NoWrap | StringFormatFlags.MeasureTrailingSpaces
@@ -210,7 +217,6 @@ public class TaskbarStatsOverlay : Form
     };
 
     private bool _isHiddenByFullscreen;
-    private const int OVERLAY_HEIGHT = 26;
 
     public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, PeripheralBatteryMonitor batteryMonitor, ContextMenuStrip contextMenu)
     {
@@ -226,33 +232,9 @@ public class TaskbarStatsOverlay : Form
         // TopMost ensures the stats float on the taskbar over normal desktop windows
         TopMost = true;
 
-        // Clean typography matching Windows 11 system tray clock font size exactly (9pt Segoe UI Variable)
-        _fontRegular = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
-        _fontBold = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
-        _fontGlyph = TryCreateFont("Segoe Fluent Icons", 9.5f, FontStyle.Regular);
-        if (_fontGlyph.FontFamily.Name != "Segoe Fluent Icons")
-        {
-            _fontGlyph = TryCreateFont("Segoe MDL2 Assets", 9.5f, FontStyle.Regular);
-        }
+        RecomputeDpiAndDimensions();
 
-        // Precompute slot widths once at startup to completely avoid per-second allocations
-        using (var measureBmp = new Bitmap(1, 1))
-        using (var gMeasure = Graphics.FromImage(measureBmp))
-        {
-            gMeasure.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            _speedBoxW = Math.Max(gMeasure.MeasureString("999.9 MB/s", _fontRegular, PointF.Empty, _sf).Width + 2f, 58f);
-            _percentBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f, 28f);
-            _cpuLabelW = gMeasure.MeasureString("CPU", _fontBold, PointF.Empty, _sf).Width;
-            _ramLabelW = gMeasure.MeasureString("RAM", _fontBold, PointF.Empty, _sf).Width;
-            _gpuLabelW = gMeasure.MeasureString("GPU", _fontBold, PointF.Empty, _sf).Width;
-            _arrowW = gMeasure.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
-            _upPrefixW = gMeasure.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
-            _dnPrefixW = gMeasure.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width;
-            _glyphBoxW = Math.Max(gMeasure.MeasureString("\uE7F6", _fontGlyph, PointF.Empty, _sf).Width, 14f);
-            _batBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f, 28f);
-        }
-
-        Size = new Size(200, OVERLAY_HEIGHT);
+        Size = new Size(200, Math.Max(26, (int)Math.Ceiling(_fontLineHeight + 8f)));
 
         // Foreground window event hook: instantly hide/unhide when apps enter or exit fullscreen
         _winEventProc = (hHook, evt, hwnd, idObj, idChild, thread, time) =>
@@ -328,26 +310,113 @@ public class TaskbarStatsOverlay : Form
         };
     }
 
-    private static Font TryCreateFont(string familyName, float defaultSize, FontStyle style)
+    private static Font CreateCleanFont(string preferredFamily, float size, FontStyle style)
     {
-        float size = defaultSize;
         try
         {
-            if (SystemFonts.MenuFont != null && SystemFonts.MenuFont.SizeInPoints > 0)
+            using var family = new FontFamily(preferredFamily);
+            if (string.Equals(family.Name, preferredFamily, StringComparison.OrdinalIgnoreCase))
             {
-                size = SystemFonts.MenuFont.SizeInPoints;
+                return new Font(preferredFamily, size, style, GraphicsUnit.Point);
+            }
+        }
+        catch { }
+        return new Font("Segoe UI", size, style, GraphicsUnit.Point);
+    }
+
+    private static Font CreateGlyphFont(float size)
+    {
+        try
+        {
+            using var family = new FontFamily("Segoe Fluent Icons");
+            if (string.Equals(family.Name, "Segoe Fluent Icons", StringComparison.OrdinalIgnoreCase))
+            {
+                return new Font("Segoe Fluent Icons", size, FontStyle.Regular, GraphicsUnit.Point);
             }
         }
         catch { }
 
         try
         {
-            return new Font(familyName, size, style, GraphicsUnit.Point);
+            using var family2 = new FontFamily("Segoe MDL2 Assets");
+            if (string.Equals(family2.Name, "Segoe MDL2 Assets", StringComparison.OrdinalIgnoreCase))
+            {
+                return new Font("Segoe MDL2 Assets", size, FontStyle.Regular, GraphicsUnit.Point);
+            }
         }
-        catch
+        catch { }
+
+        return new Font("Segoe UI", size, FontStyle.Regular, GraphicsUnit.Point);
+    }
+
+    private void RecomputeDpiAndDimensions()
+    {
+        uint dpi = 96;
+        if (IsHandleCreated)
         {
-            return new Font("Segoe UI", size, style, GraphicsUnit.Point);
+            try
+            {
+                dpi = GetDpiForWindow(Handle);
+            }
+            catch { }
         }
+        if (dpi == 0) dpi = 96;
+        _dpiScale = Math.Max(0.5f, dpi / 96.0f);
+
+        _fontRegular?.Dispose();
+        _fontBold?.Dispose();
+        _fontGlyph?.Dispose();
+
+        float baseFontSize = 9.0f * _dpiScale;
+        float glyphFontSize = 9.5f * _dpiScale;
+
+        _fontRegular = CreateCleanFont("Segoe UI Variable Text", baseFontSize, FontStyle.Regular);
+        _fontBold = CreateCleanFont("Segoe UI Variable Text", baseFontSize, FontStyle.Regular);
+        _fontGlyph = CreateGlyphFont(glyphFontSize);
+
+        using var measureBmp = new Bitmap(1, 1);
+        using var gMeasure = Graphics.FromImage(measureBmp);
+        gMeasure.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+
+        _fontLineHeight = _fontRegular.GetHeight(gMeasure);
+
+        _speedBoxW = Math.Max(gMeasure.MeasureString("999.9 MB/s", _fontRegular, PointF.Empty, _sf).Width + 2f * _dpiScale, 58f * _dpiScale);
+        _percentBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f * _dpiScale, 28f * _dpiScale);
+        _cpuLabelW = gMeasure.MeasureString("CPU", _fontBold, PointF.Empty, _sf).Width;
+        _ramLabelW = gMeasure.MeasureString("RAM", _fontBold, PointF.Empty, _sf).Width;
+        _gpuLabelW = gMeasure.MeasureString("GPU", _fontBold, PointF.Empty, _sf).Width;
+        _arrowW = gMeasure.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
+        _upPrefixW = gMeasure.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
+        _dnPrefixW = gMeasure.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width;
+        _glyphBoxW = Math.Max(gMeasure.MeasureString("\uE7F6", _fontGlyph, PointF.Empty, _sf).Width, 14f * _dpiScale);
+        _batBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f * _dpiScale, 28f * _dpiScale);
+    }
+
+    private void DrawShadowText(Graphics g, string text, Font font, Brush brush, float x, float y, StringFormat format)
+    {
+        // 1px dark drop shadow for razor-sharp legibility on light/textured wallpapers
+        g.DrawString(text, font, _brushShadow, x + 1f, y + 1f, format);
+        g.DrawString(text, font, brush, x, y, format);
+    }
+
+    private void DrawShadowText(Graphics g, string text, Font font, Brush brush, RectangleF rect, StringFormat format)
+    {
+        var shadowRect = new RectangleF(rect.X + 1f, rect.Y + 1f, rect.Width, rect.Height);
+        g.DrawString(text, font, _brushShadow, shadowRect, format);
+        g.DrawString(text, font, brush, rect, format);
+    }
+
+    private const int WM_DPICHANGED = 0x02E0;
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WM_DPICHANGED)
+        {
+            RecomputeDpiAndDimensions();
+            UpdateDockPosition(force: true);
+            RenderLayeredWindow();
+        }
+        base.WndProc(ref m);
     }
 
     protected override CreateParams CreateParams
@@ -371,6 +440,7 @@ public class TaskbarStatsOverlay : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        RecomputeDpiAndDimensions();
     }
 
     public void SetClickThrough(bool clickThrough)
@@ -591,16 +661,18 @@ public class TaskbarStatsOverlay : Form
 
         if (GetWindowRect(hTray, out RECT trayRect))
         {
+            int calculatedHeight = Math.Min(Math.Max(trayRect.Height - 4, 20), Math.Max((int)Math.Round(26f * _dpiScale), (int)Math.Ceiling(_fontLineHeight + 8f)));
+            if (Height != calculatedHeight)
+            {
+                Height = calculatedHeight;
+            }
+
             int targetX;
             int targetY = trayRect.Top + (trayRect.Height - Height) / 2;
 
             if (_config.StatsPosition == StatsPosition.Left)
             {
-                int leftOffset = 16;
-                if (IsWidgetsOnLeft())
-                {
-                    leftOffset = 165;
-                }
+                int leftOffset = (int)Math.Round((IsWidgetsOnLeft() ? 165f : 16f) * _dpiScale);
                 targetX = trayRect.Left + leftOffset;
             }
             else
@@ -608,11 +680,11 @@ public class TaskbarStatsOverlay : Form
                 IntPtr hNotify = FindWindowEx(hTray, IntPtr.Zero, "TrayNotifyWnd", null);
                 if (hNotify != IntPtr.Zero && GetWindowRect(hNotify, out RECT notifyRect))
                 {
-                    targetX = notifyRect.Left - Width - 12;
+                    targetX = notifyRect.Left - Width - (int)Math.Round(12f * _dpiScale);
                 }
                 else
                 {
-                    targetX = trayRect.Right - Width - 140;
+                    targetX = trayRect.Right - Width - (int)Math.Round(140f * _dpiScale);
                 }
             }
 
@@ -673,7 +745,7 @@ public class TaskbarStatsOverlay : Form
             string ramStr = $"{_latestStats.RamPercent}%";
             string gpuStr = $"{_latestStats.GpuPercent}%";
 
-            int h = OVERLAY_HEIGHT;
+            int h = Height;
 
             // 1. Fixed slot widths and module coordinates (Invariant to number changes!)
             float speedBoxW = _speedBoxW;
@@ -685,9 +757,9 @@ public class TaskbarStatsOverlay : Form
             float upPrefixW = _config.ShowNetArrows ? 0f : _upPrefixW;
             float dnPrefixW = _config.ShowNetArrows ? 0f : (_config.ShowUploadSpeed ? _dnPrefixW : 0f);
 
-            const float labelGap = 3f;
-            const float moduleGap = 8f;
-            const float divSlotW = 12f;
+            float labelGap = 3f * _dpiScale;
+            float moduleGap = 8f * _dpiScale;
+            float divSlotW = 12f * _dpiScale;
 
             float curX = 2f;
 
@@ -745,7 +817,7 @@ public class TaskbarStatsOverlay : Form
             float gpuValX = gpuLblX + gpuLabelW + labelGap;
             if (showGpu)
             {
-                curX = gpuValX + percentBoxW + 4f;
+                curX = gpuValX + percentBoxW + 4f * _dpiScale;
             }
 
             // --- Battery Slots Layout ---
@@ -775,7 +847,8 @@ public class TaskbarStatsOverlay : Form
                         _ => "\uE83F"
                     };
 
-                    batteryItems.Add((glyph, $"{d.BatteryPercent}%", 0f, 0f));
+                    string batText = d.BatteryPercent >= 0 ? $"{d.BatteryPercent}%" : "ON";
+                    batteryItems.Add((glyph, batText, 0f, 0f));
                 }
             }
 
@@ -822,22 +895,23 @@ public class TaskbarStatsOverlay : Form
             // 100% transparent background - NO black tint, NO pill, NO box
             g.Clear(Color.Transparent);
 
-            float rowY = 5f;
+            float rowY = Math.Max(1f, (h - _fontLineHeight) / 2f);
+            float boxH = Math.Max(_fontLineHeight + 4f, 20f * _dpiScale);
 
             // --- Upload Speed ---
             if (showUp)
             {
                 if (_config.ShowNetArrows)
                 {
-                    g.DrawString("▲", _fontBold, _brushNetUp, upX, rowY, _sf);
+                    DrawShadowText(g, "▲", _fontBold, _brushNetUp, upX, rowY, _sf);
                 }
                 else
                 {
-                    g.DrawString("UP", _fontBold, _brushNetUp, upX, rowY, _sf);
+                    DrawShadowText(g, "UP", _fontBold, _brushNetUp, upX, rowY, _sf);
                 }
 
-                var rectUp = new RectangleF(upValX, rowY, speedBoxW, 16f);
-                g.DrawString(uploadStr, _fontRegular, _brushVal, rectUp, _sfRight);
+                var rectUp = new RectangleF(upValX, rowY, speedBoxW, boxH);
+                DrawShadowText(g, uploadStr, _fontRegular, _brushVal, rectUp, _sfRight);
             }
 
             // --- Download Speed ---
@@ -845,59 +919,61 @@ public class TaskbarStatsOverlay : Form
             {
                 if (_config.ShowNetArrows)
                 {
-                    g.DrawString("▼", _fontBold, _brushNetDown, downX, rowY, _sf);
+                    DrawShadowText(g, "▼", _fontBold, _brushNetDown, downX, rowY, _sf);
                 }
                 else if (_config.ShowUploadSpeed)
                 {
-                    g.DrawString("DN", _fontBold, _brushNetDown, downX, rowY, _sf);
+                    DrawShadowText(g, "DN", _fontBold, _brushNetDown, downX, rowY, _sf);
                 }
 
-                var rectDown = new RectangleF(downValX, rowY, speedBoxW, 16f);
-                g.DrawString(downloadStr, _fontRegular, _brushVal, rectDown, _sfRight);
+                var rectDown = new RectangleF(downValX, rowY, speedBoxW, boxH);
+                DrawShadowText(g, downloadStr, _fontRegular, _brushVal, rectDown, _sfRight);
             }
 
             // --- Divider ---
             if (hasNet && hasHw)
             {
-                g.DrawLine(_penDivider, divLineX, rowY + 2f, divLineX, rowY + 14f);
+                g.DrawLine(_penShadowDivider, divLineX + 1f, rowY + 2f, divLineX + 1f, rowY + _fontLineHeight - 1f);
+                g.DrawLine(_penDivider, divLineX, rowY + 2f, divLineX, rowY + _fontLineHeight - 1f);
             }
 
             // --- CPU Usage ---
             if (showCpu)
             {
-                g.DrawString("CPU", _fontBold, _brushLabel, cpuLblX, rowY, _sf);
-                var rectCpu = new RectangleF(cpuValX, rowY, percentBoxW, 16f);
-                g.DrawString(cpuStr, _fontRegular, _brushVal, rectCpu, _sfRight);
+                DrawShadowText(g, "CPU", _fontBold, _brushLabel, cpuLblX, rowY, _sf);
+                var rectCpu = new RectangleF(cpuValX, rowY, percentBoxW, boxH);
+                DrawShadowText(g, cpuStr, _fontRegular, _brushVal, rectCpu, _sfRight);
             }
 
             // --- RAM Usage ---
             if (showRam)
             {
-                g.DrawString("RAM", _fontBold, _brushLabel, ramLblX, rowY, _sf);
-                var rectRam = new RectangleF(ramValX, rowY, percentBoxW, 16f);
-                g.DrawString(ramStr, _fontRegular, _brushVal, rectRam, _sfRight);
+                DrawShadowText(g, "RAM", _fontBold, _brushLabel, ramLblX, rowY, _sf);
+                var rectRam = new RectangleF(ramValX, rowY, percentBoxW, boxH);
+                DrawShadowText(g, ramStr, _fontRegular, _brushVal, rectRam, _sfRight);
             }
 
             // --- GPU Usage ---
             if (showGpu)
             {
-                g.DrawString("GPU", _fontBold, _brushLabel, gpuLblX, rowY, _sf);
-                var rectGpu = new RectangleF(gpuValX, rowY, percentBoxW, 16f);
-                g.DrawString(gpuStr, _fontRegular, _brushVal, rectGpu, _sfRight);
+                DrawShadowText(g, "GPU", _fontBold, _brushLabel, gpuLblX, rowY, _sf);
+                var rectGpu = new RectangleF(gpuValX, rowY, percentBoxW, boxH);
+                DrawShadowText(g, gpuStr, _fontRegular, _brushVal, rectGpu, _sfRight);
             }
 
             // --- Battery Divider ---
             if (batDivLineX > 0f)
             {
-                g.DrawLine(_penDivider, batDivLineX, rowY + 2f, batDivLineX, rowY + 14f);
+                g.DrawLine(_penShadowDivider, batDivLineX + 1f, rowY + 2f, batDivLineX + 1f, rowY + _fontLineHeight - 1f);
+                g.DrawLine(_penDivider, batDivLineX, rowY + 2f, batDivLineX, rowY + _fontLineHeight - 1f);
             }
 
             // --- Battery Devices ---
             foreach (var b in batteryItems)
             {
-                g.DrawString(b.glyph, _fontGlyph, _brushLabel, b.glyphX, rowY - 1f, _sf);
-                var rectBat = new RectangleF(b.valX, rowY, percentBoxW, 16f);
-                g.DrawString(b.text, _fontRegular, _brushVal, rectBat, _sfRight);
+                DrawShadowText(g, b.glyph, _fontGlyph, _brushLabel, b.glyphX, rowY - 1f, _sf);
+                var rectBat = new RectangleF(b.valX, rowY, percentBoxW, boxH);
+                DrawShadowText(g, b.text, _fontRegular, _brushVal, rectBat, _sfRight);
             }
 
             // 3. Update layered window with true 32bpp alpha bitmap
@@ -991,6 +1067,8 @@ public class TaskbarStatsOverlay : Form
             _brushNetDown?.Dispose();
             _brushNetUp?.Dispose();
             _penDivider?.Dispose();
+            _brushShadow?.Dispose();
+            _penShadowDivider?.Dispose();
             _sf?.Dispose();
             _sfRight?.Dispose();
             _cachedG?.Dispose();

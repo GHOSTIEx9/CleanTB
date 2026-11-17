@@ -350,11 +350,8 @@ public class TrayIconManager : IDisposable
         var itemRefresh = new ToolStripMenuItem("Refresh Taskbar", null, (s, e) =>
         {
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
-            if (_config.ShowHardwareStats)
-            {
-                _statsOverlay.Show();
-                _statsOverlay.CheckVisibilityAndRender();
-            }
+            _batteryMonitor.ForceRefresh();
+            _statsOverlay.CheckVisibilityAndRender();
         });
 
         var itemAbout = new ToolStripMenuItem("About CleanTB", null, (s, e) =>
