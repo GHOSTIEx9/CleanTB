@@ -15,6 +15,7 @@ public class TrayIconManager : IDisposable
     private readonly AppConfig _config;
     private readonly TaskbarMessageListener _listener;
     private readonly HardwareMonitor _hardwareMonitor;
+    private readonly PeripheralBatteryMonitor _batteryMonitor;
     private readonly TaskbarStatsOverlay _statsOverlay;
 
     // Menu items - Appearance
@@ -41,6 +42,15 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _itemStatsGpu = null!;
     private ToolStripMenuItem _itemStatsClickThrough = null!;
     private ToolStripMenuItem _itemStatsResetPos = null!;
+
+    // Menu items - Peripheral Battery Stats
+    private ToolStripMenuItem _menuBatteryStats = null!;
+    private ToolStripMenuItem _itemBatteryEnable = null!;
+    private ToolStripMenuItem _itemBatteryHeadphones = null!;
+    private ToolStripMenuItem _itemBatteryMouse = null!;
+    private ToolStripMenuItem _itemBatteryKeyboard = null!;
+    private ToolStripMenuItem _itemBatteryController = null!;
+    private ToolStripMenuItem _itemBatteryPreview = null!;
 
     public TrayIconManager(TaskbarController controller, AppConfig config)
     {
@@ -74,11 +84,12 @@ public class TrayIconManager : IDisposable
             }
         };
 
-        // Hardware Monitor & Taskbar Stats Overlay
+        // Hardware Monitor, Peripheral Battery Monitor & Taskbar Stats Overlay
         _hardwareMonitor = new HardwareMonitor(_config);
-        _statsOverlay = new TaskbarStatsOverlay(_config, _hardwareMonitor, _contextMenu);
+        _batteryMonitor = new PeripheralBatteryMonitor(_config);
+        _statsOverlay = new TaskbarStatsOverlay(_config, _hardwareMonitor, _batteryMonitor, _contextMenu);
 
-        if (_config.ShowHardwareStats)
+        if (_config.ShowHardwareStats || _config.ShowBatteryStats)
         {
             _statsOverlay.Show();
             _statsOverlay.CheckVisibilityAndRender();
@@ -248,6 +259,71 @@ public class TrayIconManager : IDisposable
 
         _contextMenu.Items.Add(_menuHardwareStats);
 
+        // --- Wireless Device Battery HUD Menu ---
+        _menuBatteryStats = new ToolStripMenuItem("Wireless Device Batteries");
+
+        _itemBatteryEnable = new ToolStripMenuItem("Show Device Batteries on Taskbar", null, (s, e) =>
+        {
+            _config.ShowBatteryStats = !_config.ShowBatteryStats;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.CheckVisibilityAndRender();
+        });
+
+        _itemBatteryHeadphones = new ToolStripMenuItem("Headphones & Earbuds", null, (s, e) =>
+        {
+            _config.ShowBatteryHeadphones = !_config.ShowBatteryHeadphones;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.CheckVisibilityAndRender();
+        });
+
+        _itemBatteryMouse = new ToolStripMenuItem("Wireless Mouse", null, (s, e) =>
+        {
+            _config.ShowBatteryMouse = !_config.ShowBatteryMouse;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.CheckVisibilityAndRender();
+        });
+
+        _itemBatteryKeyboard = new ToolStripMenuItem("Wireless Keyboard", null, (s, e) =>
+        {
+            _config.ShowBatteryKeyboard = !_config.ShowBatteryKeyboard;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.CheckVisibilityAndRender();
+        });
+
+        _itemBatteryController = new ToolStripMenuItem("Wireless Game Controller", null, (s, e) =>
+        {
+            _config.ShowBatteryController = !_config.ShowBatteryController;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.CheckVisibilityAndRender();
+        });
+
+        _itemBatteryPreview = new ToolStripMenuItem("Preview / Demo Devices", null, (s, e) =>
+        {
+            _config.BatteryPreviewMode = !_config.BatteryPreviewMode;
+            _config.Save();
+            UpdateMenuStates();
+            _statsOverlay.CheckVisibilityAndRender();
+        });
+
+        _menuBatteryStats.DropDownItems.AddRange(new ToolStripItem[]
+        {
+            _itemBatteryEnable,
+            new ToolStripSeparator(),
+            _itemBatteryHeadphones,
+            _itemBatteryMouse,
+            _itemBatteryKeyboard,
+            _itemBatteryController,
+            new ToolStripSeparator(),
+            _itemBatteryPreview
+        });
+
+        _contextMenu.Items.Add(_menuBatteryStats);
+
         _contextMenu.Items.Add(new ToolStripSeparator());
 
         _itemHideBorder = new ToolStripMenuItem("Hide Top Border Line", null, (s, e) =>
@@ -354,6 +430,20 @@ public class TrayIconManager : IDisposable
         _itemStatsGpu.Checked = _config.ShowGpu;
         _itemStatsClickThrough.Checked = _config.StatsClickThrough;
 
+        // Battery HUD menu states
+        _itemBatteryEnable.Checked = _config.ShowBatteryStats;
+        _itemBatteryHeadphones.Enabled = _config.ShowBatteryStats;
+        _itemBatteryMouse.Enabled = _config.ShowBatteryStats;
+        _itemBatteryKeyboard.Enabled = _config.ShowBatteryStats;
+        _itemBatteryController.Enabled = _config.ShowBatteryStats;
+        _itemBatteryPreview.Enabled = _config.ShowBatteryStats;
+
+        _itemBatteryHeadphones.Checked = _config.ShowBatteryHeadphones;
+        _itemBatteryMouse.Checked = _config.ShowBatteryMouse;
+        _itemBatteryKeyboard.Checked = _config.ShowBatteryKeyboard;
+        _itemBatteryController.Checked = _config.ShowBatteryController;
+        _itemBatteryPreview.Checked = _config.BatteryPreviewMode;
+
         _itemHideBorder.Checked = _config.HideBorder;
         _itemStartup.Checked = IsStartupEnabled();
 
@@ -448,6 +538,7 @@ public class TrayIconManager : IDisposable
         _statsOverlay.Hide();
         _statsOverlay.Dispose();
         _hardwareMonitor.Dispose();
+        _batteryMonitor.Dispose();
         _listener.Dispose();
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();

@@ -165,6 +165,7 @@ public class TaskbarStatsOverlay : Form
 
     private readonly AppConfig _config;
     private readonly HardwareMonitor _monitor;
+    private readonly PeripheralBatteryMonitor _batteryMonitor;
     private readonly ContextMenuStrip _contextMenu;
     private HardwareStats _latestStats;
 
@@ -174,6 +175,7 @@ public class TaskbarStatsOverlay : Form
 
     private readonly Font _fontRegular;
     private readonly Font _fontBold;
+    private readonly Font _fontGlyph;
 
     // Precomputed slot dimensions (Calculated once to eliminate per-second allocations)
     private readonly float _speedBoxW;
@@ -184,6 +186,8 @@ public class TaskbarStatsOverlay : Form
     private readonly float _arrowW;
     private readonly float _upPrefixW;
     private readonly float _dnPrefixW;
+    private readonly float _glyphBoxW;
+    private readonly float _batBoxW;
 
     // Cached GDI bitmap and graphics context to eliminate per-second unmanaged heap churn
     private Bitmap? _cachedBmp;
@@ -208,10 +212,11 @@ public class TaskbarStatsOverlay : Form
     private bool _isHiddenByFullscreen;
     private const int OVERLAY_HEIGHT = 26;
 
-    public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, ContextMenuStrip contextMenu)
+    public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, PeripheralBatteryMonitor batteryMonitor, ContextMenuStrip contextMenu)
     {
         _config = config;
         _monitor = monitor;
+        _batteryMonitor = batteryMonitor;
         _contextMenu = contextMenu;
 
         FormBorderStyle = FormBorderStyle.None;
@@ -224,6 +229,11 @@ public class TaskbarStatsOverlay : Form
         // Clean typography matching Windows 11 system tray clock font size exactly (9pt Segoe UI Variable)
         _fontRegular = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
         _fontBold = TryCreateFont("Segoe UI Variable Text", 9.0f, FontStyle.Regular);
+        _fontGlyph = TryCreateFont("Segoe Fluent Icons", 9.5f, FontStyle.Regular);
+        if (_fontGlyph.FontFamily.Name != "Segoe Fluent Icons")
+        {
+            _fontGlyph = TryCreateFont("Segoe MDL2 Assets", 9.5f, FontStyle.Regular);
+        }
 
         // Precompute slot widths once at startup to completely avoid per-second allocations
         using (var measureBmp = new Bitmap(1, 1))
@@ -238,6 +248,8 @@ public class TaskbarStatsOverlay : Form
             _arrowW = gMeasure.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
             _upPrefixW = gMeasure.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
             _dnPrefixW = gMeasure.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width;
+            _glyphBoxW = Math.Max(gMeasure.MeasureString("\uE7F6", _fontGlyph, PointF.Empty, _sf).Width, 14f);
+            _batBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f, 28f);
         }
 
         Size = new Size(200, OVERLAY_HEIGHT);
@@ -268,6 +280,18 @@ public class TaskbarStatsOverlay : Form
         _monitor.StatsUpdated += stats =>
         {
             _latestStats = stats;
+            if (IsHandleCreated && !IsDisposed)
+            {
+                try
+                {
+                    BeginInvoke(new Action(CheckVisibilityAndRender));
+                }
+                catch { }
+            }
+        };
+
+        _batteryMonitor.BatteryUpdated += devices =>
+        {
             if (IsHandleCreated && !IsDisposed)
             {
                 try
@@ -367,13 +391,35 @@ public class TaskbarStatsOverlay : Form
         CheckVisibilityAndRender();
     }
 
+    public bool HasActiveBatteryDevices()
+    {
+        if (!_config.ShowBatteryStats || _batteryMonitor == null) return false;
+        var devices = _batteryMonitor.GetCurrentDevices();
+        foreach (var d in devices)
+        {
+            if (!d.IsConnected) continue;
+            bool ok = d.Type switch
+            {
+                PeripheralType.Headphones => _config.ShowBatteryHeadphones,
+                PeripheralType.Mouse => _config.ShowBatteryMouse,
+                PeripheralType.Keyboard => _config.ShowBatteryKeyboard,
+                PeripheralType.Controller => _config.ShowBatteryController,
+                _ => true
+            };
+            if (ok) return true;
+        }
+        return false;
+    }
+
     public void CheckVisibilityAndRender()
     {
         if (IsDisposed) return;
 
+        bool shouldShow = _config.ShowHardwareStats || HasActiveBatteryDevices();
+
         if (!IsHandleCreated)
         {
-            if (_config.ShowHardwareStats)
+            if (shouldShow)
             {
                 Show();
             }
@@ -381,7 +427,7 @@ public class TaskbarStatsOverlay : Form
         }
 
         // 1. If stats overlay is disabled in settings, ensure hidden
-        if (!_config.ShowHardwareStats)
+        if (!shouldShow)
         {
             if (Visible)
             {
@@ -694,12 +740,60 @@ public class TaskbarStatsOverlay : Form
             }
 
             // --- GPU Slot ---
-            bool showGpu = _config.ShowGpu;
+            bool showGpu = _config.ShowHardwareStats && _config.ShowGpu;
             float gpuLblX = curX;
             float gpuValX = gpuLblX + gpuLabelW + labelGap;
             if (showGpu)
             {
                 curX = gpuValX + percentBoxW + 4f;
+            }
+
+            // --- Battery Slots Layout ---
+            var batteryItems = new List<(string glyph, string text, float glyphX, float valX)>();
+            if (_config.ShowBatteryStats && _batteryMonitor != null)
+            {
+                var devices = _batteryMonitor.GetCurrentDevices();
+                foreach (var d in devices)
+                {
+                    if (!d.IsConnected) continue;
+                    bool include = d.Type switch
+                    {
+                        PeripheralType.Headphones => _config.ShowBatteryHeadphones,
+                        PeripheralType.Mouse => _config.ShowBatteryMouse,
+                        PeripheralType.Keyboard => _config.ShowBatteryKeyboard,
+                        PeripheralType.Controller => _config.ShowBatteryController,
+                        _ => true
+                    };
+                    if (!include) continue;
+
+                    string glyph = d.Type switch
+                    {
+                        PeripheralType.Headphones => "\uE7F6",
+                        PeripheralType.Mouse => "\uE962",
+                        PeripheralType.Keyboard => "\uE765",
+                        PeripheralType.Controller => "\uE7FC",
+                        _ => "\uE83F"
+                    };
+
+                    batteryItems.Add((glyph, $"{d.BatteryPercent}%", 0f, 0f));
+                }
+            }
+
+            bool hasHwOrNet = hasNet || hasHw;
+            float batDivLineX = 0f;
+            if (hasHwOrNet && batteryItems.Count > 0)
+            {
+                batDivLineX = curX + (divSlotW / 2f);
+                curX += divSlotW;
+            }
+
+            for (int i = 0; i < batteryItems.Count; i++)
+            {
+                var item = batteryItems[i];
+                float gX = curX;
+                float vX = gX + _glyphBoxW + labelGap;
+                batteryItems[i] = (item.glyph, item.text, gX, vX);
+                curX = vX + percentBoxW + moduleGap;
             }
 
             int neededWidth = Math.Max((int)Math.Ceiling(curX) + 2, 40);
@@ -792,6 +886,20 @@ public class TaskbarStatsOverlay : Form
                 g.DrawString(gpuStr, _fontRegular, _brushVal, rectGpu, _sfRight);
             }
 
+            // --- Battery Divider ---
+            if (batDivLineX > 0f)
+            {
+                g.DrawLine(_penDivider, batDivLineX, rowY + 2f, batDivLineX, rowY + 14f);
+            }
+
+            // --- Battery Devices ---
+            foreach (var b in batteryItems)
+            {
+                g.DrawString(b.glyph, _fontGlyph, _brushLabel, b.glyphX, rowY - 1f, _sf);
+                var rectBat = new RectangleF(b.valX, rowY, percentBoxW, 16f);
+                g.DrawString(b.text, _fontRegular, _brushVal, rectBat, _sfRight);
+            }
+
             // 3. Update layered window with true 32bpp alpha bitmap
             IntPtr screenDc = GetDC(IntPtr.Zero);
             IntPtr memDc = CreateCompatibleDC(screenDc);
@@ -877,6 +985,7 @@ public class TaskbarStatsOverlay : Form
 
             _fontRegular?.Dispose();
             _fontBold?.Dispose();
+            _fontGlyph?.Dispose();
             _brushVal?.Dispose();
             _brushLabel?.Dispose();
             _brushNetDown?.Dispose();

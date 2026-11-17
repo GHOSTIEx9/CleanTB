@@ -39,6 +39,14 @@ public class AppConfig
     public int? StatsCustomX { get; set; } = null;
     public int? StatsCustomY { get; set; } = null;
 
+    // Peripheral Battery HUD Settings
+    public bool ShowBatteryStats { get; set; } = true;
+    public bool ShowBatteryHeadphones { get; set; } = true;
+    public bool ShowBatteryMouse { get; set; } = true;
+    public bool ShowBatteryKeyboard { get; set; } = true;
+    public bool ShowBatteryController { get; set; } = true;
+    public bool BatteryPreviewMode { get; set; } = false;
+
     private static readonly string ConfigPath = Path.Combine(
         AppDomain.CurrentDomain.BaseDirectory,
         "config.json"
