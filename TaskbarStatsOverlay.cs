@@ -204,7 +204,7 @@ public class TaskbarStatsOverlay : Form
     private readonly SolidBrush _brushNetDown = new(Color.FromArgb(0, 225, 255));
     private readonly SolidBrush _brushNetUp = new(Color.FromArgb(255, 185, 80));
     private readonly Pen _penDivider = new(Color.FromArgb(60, 255, 255, 255), 1f);
-    private readonly SolidBrush _brushShadow = new(Color.FromArgb(160, 0, 0, 0));
+    private readonly SolidBrush _brushShadow = new(Color.FromArgb(90, 0, 0, 0));
     private readonly Pen _penShadowDivider = new(Color.FromArgb(80, 0, 0, 0), 1f);
     private readonly StringFormat _sf = new(StringFormat.GenericTypographic)
     {
@@ -310,42 +310,39 @@ public class TaskbarStatsOverlay : Form
         };
     }
 
-    private static Font CreateCleanFont(string preferredFamily, float size, FontStyle style)
+    private static Font CreateCleanFont(float size, FontStyle style)
     {
-        try
+        string[] candidates = { "Segoe UI Variable Small", "Segoe UI Variable Text", "Segoe UI" };
+        foreach (var family in candidates)
         {
-            using var family = new FontFamily(preferredFamily);
-            if (string.Equals(family.Name, preferredFamily, StringComparison.OrdinalIgnoreCase))
+            try
             {
-                return new Font(preferredFamily, size, style, GraphicsUnit.Point);
+                using var test = new FontFamily(family);
+                if (string.Equals(test.Name, family, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new Font(family, size, style, GraphicsUnit.Point);
+                }
             }
+            catch { }
         }
-        catch { }
         return new Font("Segoe UI", size, style, GraphicsUnit.Point);
     }
 
     private static Font CreateGlyphFont(float size)
     {
-        try
+        string[] candidates = { "Segoe Fluent Icons", "Segoe MDL2 Assets" };
+        foreach (var family in candidates)
         {
-            using var family = new FontFamily("Segoe Fluent Icons");
-            if (string.Equals(family.Name, "Segoe Fluent Icons", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                return new Font("Segoe Fluent Icons", size, FontStyle.Regular, GraphicsUnit.Point);
+                using var test = new FontFamily(family);
+                if (string.Equals(test.Name, family, StringComparison.OrdinalIgnoreCase))
+                {
+                    return new Font(family, size, FontStyle.Regular, GraphicsUnit.Point);
+                }
             }
+            catch { }
         }
-        catch { }
-
-        try
-        {
-            using var family2 = new FontFamily("Segoe MDL2 Assets");
-            if (string.Equals(family2.Name, "Segoe MDL2 Assets", StringComparison.OrdinalIgnoreCase))
-            {
-                return new Font("Segoe MDL2 Assets", size, FontStyle.Regular, GraphicsUnit.Point);
-            }
-        }
-        catch { }
-
         return new Font("Segoe UI", size, FontStyle.Regular, GraphicsUnit.Point);
     }
 
@@ -367,11 +364,14 @@ public class TaskbarStatsOverlay : Form
         _fontBold?.Dispose();
         _fontGlyph?.Dispose();
 
-        float baseFontSize = 9.0f * _dpiScale;
-        float glyphFontSize = 9.5f * _dpiScale;
+        // 9.0pt exactly matches the Windows taskbar clock font size.
+        // With PerMonitorV2, GraphicsUnit.Point automatically scales proportionally to the display DPI:
+        // 96 DPI (100%) -> 12px, 120 DPI (125%) -> 15px, 192 DPI (200%) -> 24px.
+        const float baseFontSize = 9.0f;
+        const float glyphFontSize = 9.0f;
 
-        _fontRegular = CreateCleanFont("Segoe UI Variable Text", baseFontSize, FontStyle.Regular);
-        _fontBold = CreateCleanFont("Segoe UI Variable Text", baseFontSize, FontStyle.Regular);
+        _fontRegular = CreateCleanFont(baseFontSize, FontStyle.Regular);
+        _fontBold = CreateCleanFont(baseFontSize, FontStyle.Regular);
         _fontGlyph = CreateGlyphFont(glyphFontSize);
 
         using var measureBmp = new Bitmap(1, 1);
