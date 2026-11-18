@@ -168,8 +168,8 @@ public class TaskbarStatsOverlay : Form
 
     private readonly AppConfig _config;
     private readonly HardwareMonitor _monitor;
-    private readonly PeripheralBatteryMonitor _batteryMonitor;
     private readonly ContextMenuStrip _contextMenu;
+    private TaskbarBatteryOverlay? _batteryOverlay;
     private HardwareStats _latestStats;
 
     private bool _isDragging;
@@ -178,7 +178,6 @@ public class TaskbarStatsOverlay : Form
 
     private Font _fontRegular = null!;
     private Font _fontBold = null!;
-    private Font _fontGlyph = null!;
     private float _dpiScale = 1.0f;
     private float _fontLineHeight = 16f;
 
@@ -191,8 +190,6 @@ public class TaskbarStatsOverlay : Form
     private float _arrowW;
     private float _upPrefixW;
     private float _dnPrefixW;
-    private float _glyphBoxW;
-    private float _batBoxW;
 
     // Cached GDI bitmap and graphics context to eliminate per-second unmanaged heap churn
     private Bitmap? _cachedBmp;
@@ -218,12 +215,12 @@ public class TaskbarStatsOverlay : Form
 
     private bool _isHiddenByFullscreen;
 
-    public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, PeripheralBatteryMonitor batteryMonitor, ContextMenuStrip contextMenu)
+    public TaskbarStatsOverlay(AppConfig config, HardwareMonitor monitor, ContextMenuStrip contextMenu, TaskbarBatteryOverlay? batteryOverlay = null)
     {
         _config = config;
         _monitor = monitor;
-        _batteryMonitor = batteryMonitor;
         _contextMenu = contextMenu;
+        _batteryOverlay = batteryOverlay;
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -272,18 +269,6 @@ public class TaskbarStatsOverlay : Form
             }
         };
 
-        _batteryMonitor.BatteryUpdated += devices =>
-        {
-            if (IsHandleCreated && !IsDisposed)
-            {
-                try
-                {
-                    BeginInvoke(new Action(CheckVisibilityAndRender));
-                }
-                catch { }
-            }
-        };
-
         // Wire mouse interactions
         MouseDown += OnMouseDown;
         MouseMove += OnMouseMove;
@@ -310,6 +295,11 @@ public class TaskbarStatsOverlay : Form
         };
     }
 
+    public void SetBatteryOverlay(TaskbarBatteryOverlay batteryOverlay)
+    {
+        _batteryOverlay = batteryOverlay;
+    }
+
     private static Font CreateCleanFont(float size, FontStyle style)
     {
         string[] candidates = { "Segoe UI Variable Small", "Segoe UI Variable Text", "Segoe UI" };
@@ -328,24 +318,6 @@ public class TaskbarStatsOverlay : Form
         return new Font("Segoe UI", size, style, GraphicsUnit.Point);
     }
 
-    private static Font CreateGlyphFont(float size)
-    {
-        string[] candidates = { "Segoe Fluent Icons", "Segoe MDL2 Assets" };
-        foreach (var family in candidates)
-        {
-            try
-            {
-                using var test = new FontFamily(family);
-                if (string.Equals(test.Name, family, StringComparison.OrdinalIgnoreCase))
-                {
-                    return new Font(family, size, FontStyle.Regular, GraphicsUnit.Point);
-                }
-            }
-            catch { }
-        }
-        return new Font("Segoe UI", size, FontStyle.Regular, GraphicsUnit.Point);
-    }
-
     private void RecomputeDpiAndDimensions()
     {
         uint dpi = 96;
@@ -362,17 +334,14 @@ public class TaskbarStatsOverlay : Form
 
         _fontRegular?.Dispose();
         _fontBold?.Dispose();
-        _fontGlyph?.Dispose();
 
         // 9.0pt exactly matches the Windows taskbar clock font size.
         // With PerMonitorV2, GraphicsUnit.Point automatically scales proportionally to the display DPI:
         // 96 DPI (100%) -> 12px, 120 DPI (125%) -> 15px, 192 DPI (200%) -> 24px.
         const float baseFontSize = 9.0f;
-        const float glyphFontSize = 9.0f;
 
         _fontRegular = CreateCleanFont(baseFontSize, FontStyle.Regular);
         _fontBold = CreateCleanFont(baseFontSize, FontStyle.Regular);
-        _fontGlyph = CreateGlyphFont(glyphFontSize);
 
         using var measureBmp = new Bitmap(1, 1);
         using var gMeasure = Graphics.FromImage(measureBmp);
@@ -388,8 +357,6 @@ public class TaskbarStatsOverlay : Form
         _arrowW = gMeasure.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
         _upPrefixW = gMeasure.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
         _dnPrefixW = gMeasure.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width;
-        _glyphBoxW = Math.Max(gMeasure.MeasureString("\uE7F6", _fontGlyph, PointF.Empty, _sf).Width, 14f * _dpiScale);
-        _batBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f * _dpiScale, 28f * _dpiScale);
     }
 
     private void DrawShadowText(Graphics g, string text, Font font, Brush brush, float x, float y, StringFormat format)
@@ -461,31 +428,11 @@ public class TaskbarStatsOverlay : Form
         CheckVisibilityAndRender();
     }
 
-    public bool HasActiveBatteryDevices()
-    {
-        if (!_config.ShowBatteryStats || _batteryMonitor == null) return false;
-        var devices = _batteryMonitor.GetCurrentDevices();
-        foreach (var d in devices)
-        {
-            if (!d.IsConnected) continue;
-            bool ok = d.Type switch
-            {
-                PeripheralType.Headphones => _config.ShowBatteryHeadphones,
-                PeripheralType.Mouse => _config.ShowBatteryMouse,
-                PeripheralType.Keyboard => _config.ShowBatteryKeyboard,
-                PeripheralType.Controller => _config.ShowBatteryController,
-                _ => true
-            };
-            if (ok) return true;
-        }
-        return false;
-    }
-
     public void CheckVisibilityAndRender()
     {
         if (IsDisposed) return;
 
-        bool shouldShow = _config.ShowHardwareStats || HasActiveBatteryDevices();
+        bool shouldShow = _config.ShowHardwareStats;
 
         if (!IsHandleCreated)
         {
@@ -678,13 +625,23 @@ public class TaskbarStatsOverlay : Form
             else
             {
                 IntPtr hNotify = FindWindowEx(hTray, IntPtr.Zero, "TrayNotifyWnd", null);
+                int trayEdge;
                 if (hNotify != IntPtr.Zero && GetWindowRect(hNotify, out RECT notifyRect))
                 {
-                    targetX = notifyRect.Left - Width - (int)Math.Round(12f * _dpiScale);
+                    trayEdge = notifyRect.Left;
                 }
                 else
                 {
-                    targetX = trayRect.Right - Width - (int)Math.Round(140f * _dpiScale);
+                    trayEdge = trayRect.Right - (int)Math.Round(140f * _dpiScale);
+                }
+
+                if (_batteryOverlay != null && _batteryOverlay.Visible && _config.BatteryPosition == StatsPosition.Right && !_config.BatteryCustomX.HasValue)
+                {
+                    targetX = _batteryOverlay.Location.X - Width - (int)Math.Round(8f * _dpiScale);
+                }
+                else
+                {
+                    targetX = trayEdge - Width - (int)Math.Round(12f * _dpiScale);
                 }
             }
 
@@ -721,6 +678,8 @@ public class TaskbarStatsOverlay : Form
         _config.Save();
         UpdateDockPosition(force: true);
         CheckVisibilityAndRender();
+        _batteryOverlay?.UpdateDockPosition(force: true);
+        _batteryOverlay?.CheckVisibilityAndRender();
     }
 
     public void ResetPosition()
@@ -730,6 +689,8 @@ public class TaskbarStatsOverlay : Form
         _config.Save();
         UpdateDockPosition(force: true);
         CheckVisibilityAndRender();
+        _batteryOverlay?.UpdateDockPosition(force: true);
+        _batteryOverlay?.CheckVisibilityAndRender();
     }
 
     public void RenderLayeredWindow()
@@ -819,54 +780,13 @@ public class TaskbarStatsOverlay : Form
             {
                 curX = gpuValX + percentBoxW + 4f * _dpiScale;
             }
-
-            // --- Battery Slots Layout ---
-            var batteryItems = new List<(string glyph, string text, float glyphX, float valX)>();
-            if (_config.ShowBatteryStats && _batteryMonitor != null)
+            else if (showRam)
             {
-                var devices = _batteryMonitor.GetCurrentDevices();
-                foreach (var d in devices)
-                {
-                    if (!d.IsConnected) continue;
-                    bool include = d.Type switch
-                    {
-                        PeripheralType.Headphones => _config.ShowBatteryHeadphones,
-                        PeripheralType.Mouse => _config.ShowBatteryMouse,
-                        PeripheralType.Keyboard => _config.ShowBatteryKeyboard,
-                        PeripheralType.Controller => _config.ShowBatteryController,
-                        _ => true
-                    };
-                    if (!include) continue;
-
-                    string glyph = d.Type switch
-                    {
-                        PeripheralType.Headphones => "\uE7F6",
-                        PeripheralType.Mouse => "\uE962",
-                        PeripheralType.Keyboard => "\uE765",
-                        PeripheralType.Controller => "\uE7FC",
-                        _ => "\uE83F"
-                    };
-
-                    string batText = d.BatteryPercent >= 0 ? $"{d.BatteryPercent}%" : "ON";
-                    batteryItems.Add((glyph, batText, 0f, 0f));
-                }
+                curX = ramValX + percentBoxW + 4f * _dpiScale;
             }
-
-            bool hasHwOrNet = hasNet || hasHw;
-            float batDivLineX = 0f;
-            if (hasHwOrNet && batteryItems.Count > 0)
+            else if (showCpu)
             {
-                batDivLineX = curX + (divSlotW / 2f);
-                curX += divSlotW;
-            }
-
-            for (int i = 0; i < batteryItems.Count; i++)
-            {
-                var item = batteryItems[i];
-                float gX = curX;
-                float vX = gX + _glyphBoxW + labelGap;
-                batteryItems[i] = (item.glyph, item.text, gX, vX);
-                curX = vX + percentBoxW + moduleGap;
+                curX = cpuValX + percentBoxW + 4f * _dpiScale;
             }
 
             int neededWidth = Math.Max((int)Math.Ceiling(curX) + 2, 40);
@@ -874,6 +794,7 @@ public class TaskbarStatsOverlay : Form
             {
                 Width = neededWidth;
                 UpdateDockPosition(force: true);
+                _batteryOverlay?.UpdateDockPosition(force: true);
             }
 
             int w = Width;
@@ -961,21 +882,6 @@ public class TaskbarStatsOverlay : Form
                 DrawShadowText(g, gpuStr, _fontRegular, _brushVal, rectGpu, _sfRight);
             }
 
-            // --- Battery Divider ---
-            if (batDivLineX > 0f)
-            {
-                g.DrawLine(_penShadowDivider, batDivLineX + 1f, rowY + 2f, batDivLineX + 1f, rowY + _fontLineHeight - 1f);
-                g.DrawLine(_penDivider, batDivLineX, rowY + 2f, batDivLineX, rowY + _fontLineHeight - 1f);
-            }
-
-            // --- Battery Devices ---
-            foreach (var b in batteryItems)
-            {
-                DrawShadowText(g, b.glyph, _fontGlyph, _brushLabel, b.glyphX, rowY - 1f, _sf);
-                var rectBat = new RectangleF(b.valX, rowY, percentBoxW, boxH);
-                DrawShadowText(g, b.text, _fontRegular, _brushVal, rectBat, _sfRight);
-            }
-
             // 3. Update layered window with true 32bpp alpha bitmap
             IntPtr screenDc = GetDC(IntPtr.Zero);
             IntPtr memDc = CreateCompatibleDC(screenDc);
@@ -1046,6 +952,7 @@ public class TaskbarStatsOverlay : Form
             _config.StatsCustomY = Location.Y;
             _config.Save();
             RenderLayeredWindow();
+            _batteryOverlay?.UpdateDockPosition(force: true);
         }
     }
 
@@ -1061,7 +968,6 @@ public class TaskbarStatsOverlay : Form
 
             _fontRegular?.Dispose();
             _fontBold?.Dispose();
-            _fontGlyph?.Dispose();
             _brushVal?.Dispose();
             _brushLabel?.Dispose();
             _brushNetDown?.Dispose();

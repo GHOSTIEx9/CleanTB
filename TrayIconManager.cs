@@ -17,6 +17,7 @@ public class TrayIconManager : IDisposable
     private readonly HardwareMonitor _hardwareMonitor;
     private readonly PeripheralBatteryMonitor _batteryMonitor;
     private readonly TaskbarStatsOverlay _statsOverlay;
+    private readonly TaskbarBatteryOverlay _batteryOverlay;
 
     // Menu items - Appearance
     private ToolStripMenuItem _itemHeader = null!;
@@ -46,11 +47,14 @@ public class TrayIconManager : IDisposable
     // Menu items - Peripheral Battery Stats
     private ToolStripMenuItem _menuBatteryStats = null!;
     private ToolStripMenuItem _itemBatteryEnable = null!;
+    private ToolStripMenuItem _itemBatteryPosLeft = null!;
+    private ToolStripMenuItem _itemBatteryPosRight = null!;
     private ToolStripMenuItem _itemBatteryHeadphones = null!;
     private ToolStripMenuItem _itemBatteryMouse = null!;
     private ToolStripMenuItem _itemBatteryKeyboard = null!;
     private ToolStripMenuItem _itemBatteryController = null!;
     private ToolStripMenuItem _itemBatteryPreview = null!;
+    private ToolStripMenuItem _itemBatteryResetPos = null!;
 
     public TrayIconManager(TaskbarController controller, AppConfig config)
     {
@@ -84,12 +88,20 @@ public class TrayIconManager : IDisposable
             }
         };
 
-        // Hardware Monitor, Peripheral Battery Monitor & Taskbar Stats Overlay
+        // Hardware Monitor, Peripheral Battery Monitor & Taskbar Overlays
         _hardwareMonitor = new HardwareMonitor(_config);
         _batteryMonitor = new PeripheralBatteryMonitor(_config);
-        _statsOverlay = new TaskbarStatsOverlay(_config, _hardwareMonitor, _batteryMonitor, _contextMenu);
+        _batteryOverlay = new TaskbarBatteryOverlay(_config, _batteryMonitor, _contextMenu);
+        _statsOverlay = new TaskbarStatsOverlay(_config, _hardwareMonitor, _contextMenu, _batteryOverlay);
+        _batteryOverlay.SetStatsOverlay(_statsOverlay);
 
-        if (_config.ShowHardwareStats || _config.ShowBatteryStats)
+        if (_config.ShowBatteryStats && _batteryOverlay.HasActiveBatteryDevices())
+        {
+            _batteryOverlay.Show();
+            _batteryOverlay.CheckVisibilityAndRender();
+        }
+
+        if (_config.ShowHardwareStats)
         {
             _statsOverlay.Show();
             _statsOverlay.CheckVisibilityAndRender();
@@ -99,6 +111,10 @@ public class TrayIconManager : IDisposable
         _listener = new TaskbarMessageListener(() =>
         {
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+            if (_config.ShowBatteryStats && !_batteryOverlay.IsDisposed)
+            {
+                _batteryOverlay.CheckVisibilityAndRender();
+            }
             if (_config.ShowHardwareStats && !_statsOverlay.IsDisposed)
             {
                 _statsOverlay.CheckVisibilityAndRender();
@@ -267,7 +283,21 @@ public class TrayIconManager : IDisposable
             _config.ShowBatteryStats = !_config.ShowBatteryStats;
             _config.Save();
             UpdateMenuStates();
+            _batteryOverlay.CheckVisibilityAndRender();
+            _statsOverlay.UpdateDockPosition(force: true);
             _statsOverlay.CheckVisibilityAndRender();
+        });
+
+        _itemBatteryPosLeft = new ToolStripMenuItem("Dock to Left Side (Empty Taskbar)", null, (s, e) =>
+        {
+            _batteryOverlay.SetDockPosition(StatsPosition.Left);
+            UpdateMenuStates();
+        });
+
+        _itemBatteryPosRight = new ToolStripMenuItem("Dock to Right Side (System Tray)", null, (s, e) =>
+        {
+            _batteryOverlay.SetDockPosition(StatsPosition.Right);
+            UpdateMenuStates();
         });
 
         _itemBatteryHeadphones = new ToolStripMenuItem("Headphones & Earbuds", null, (s, e) =>
@@ -275,7 +305,7 @@ public class TrayIconManager : IDisposable
             _config.ShowBatteryHeadphones = !_config.ShowBatteryHeadphones;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.CheckVisibilityAndRender();
+            _batteryOverlay.CheckVisibilityAndRender();
         });
 
         _itemBatteryMouse = new ToolStripMenuItem("Wireless Mouse", null, (s, e) =>
@@ -283,7 +313,7 @@ public class TrayIconManager : IDisposable
             _config.ShowBatteryMouse = !_config.ShowBatteryMouse;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.CheckVisibilityAndRender();
+            _batteryOverlay.CheckVisibilityAndRender();
         });
 
         _itemBatteryKeyboard = new ToolStripMenuItem("Wireless Keyboard", null, (s, e) =>
@@ -291,7 +321,7 @@ public class TrayIconManager : IDisposable
             _config.ShowBatteryKeyboard = !_config.ShowBatteryKeyboard;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.CheckVisibilityAndRender();
+            _batteryOverlay.CheckVisibilityAndRender();
         });
 
         _itemBatteryController = new ToolStripMenuItem("Wireless Game Controller", null, (s, e) =>
@@ -299,7 +329,7 @@ public class TrayIconManager : IDisposable
             _config.ShowBatteryController = !_config.ShowBatteryController;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.CheckVisibilityAndRender();
+            _batteryOverlay.CheckVisibilityAndRender();
         });
 
         _itemBatteryPreview = new ToolStripMenuItem("Preview / Demo Devices", null, (s, e) =>
@@ -307,19 +337,30 @@ public class TrayIconManager : IDisposable
             _config.BatteryPreviewMode = !_config.BatteryPreviewMode;
             _config.Save();
             UpdateMenuStates();
-            _statsOverlay.CheckVisibilityAndRender();
+            _batteryOverlay.CheckVisibilityAndRender();
+        });
+
+        _itemBatteryResetPos = new ToolStripMenuItem("Reset Dock Position", null, (s, e) =>
+        {
+            _batteryOverlay.ResetPosition();
+            UpdateMenuStates();
         });
 
         _menuBatteryStats.DropDownItems.AddRange(new ToolStripItem[]
         {
             _itemBatteryEnable,
             new ToolStripSeparator(),
+            _itemBatteryPosLeft,
+            _itemBatteryPosRight,
+            new ToolStripSeparator(),
             _itemBatteryHeadphones,
             _itemBatteryMouse,
             _itemBatteryKeyboard,
             _itemBatteryController,
             new ToolStripSeparator(),
-            _itemBatteryPreview
+            _itemBatteryPreview,
+            new ToolStripSeparator(),
+            _itemBatteryResetPos
         });
 
         _contextMenu.Items.Add(_menuBatteryStats);
@@ -351,6 +392,7 @@ public class TrayIconManager : IDisposable
         {
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
             _batteryMonitor.ForceRefresh();
+            _batteryOverlay.CheckVisibilityAndRender();
             _statsOverlay.CheckVisibilityAndRender();
         });
 
@@ -366,8 +408,9 @@ public class TrayIconManager : IDisposable
                 "Tips:\n" +
                 "• Left-click tray icon to toggle Clear / Default.\n" +
                 "• Double-click the taskbar stats HUD to open Task Manager.\n" +
-                "• Choose Left or Right side docking from the Position menu.\n" +
-                "• Drag the stats HUD to place it anywhere on screen.",
+                "• Double-click the battery HUD to open Bluetooth Settings.\n" +
+                "• Choose Left or Right side docking independently for Hardware Stats and Battery HUD.\n" +
+                "• Drag either HUD to place it anywhere on screen.",
                 "About CleanTB",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information
@@ -378,6 +421,7 @@ public class TrayIconManager : IDisposable
         {
             _controller.RestoreDefault();
             _statsOverlay.Hide();
+            _batteryOverlay.Hide();
             Application.Exit();
         });
 
@@ -429,11 +473,27 @@ public class TrayIconManager : IDisposable
 
         // Battery HUD menu states
         _itemBatteryEnable.Checked = _config.ShowBatteryStats;
+        _itemBatteryPosLeft.Enabled = _config.ShowBatteryStats;
+        _itemBatteryPosRight.Enabled = _config.ShowBatteryStats;
         _itemBatteryHeadphones.Enabled = _config.ShowBatteryStats;
         _itemBatteryMouse.Enabled = _config.ShowBatteryStats;
         _itemBatteryKeyboard.Enabled = _config.ShowBatteryStats;
         _itemBatteryController.Enabled = _config.ShowBatteryStats;
         _itemBatteryPreview.Enabled = _config.ShowBatteryStats;
+
+        bool isCustomBattery = _config.BatteryCustomX.HasValue && _config.BatteryCustomY.HasValue;
+        _itemBatteryResetPos.Enabled = _config.ShowBatteryStats && isCustomBattery;
+
+        if (isCustomBattery)
+        {
+            _itemBatteryPosLeft.Checked = false;
+            _itemBatteryPosRight.Checked = false;
+        }
+        else
+        {
+            _itemBatteryPosLeft.Checked = (_config.BatteryPosition == StatsPosition.Left);
+            _itemBatteryPosRight.Checked = (_config.BatteryPosition == StatsPosition.Right);
+        }
 
         _itemBatteryHeadphones.Checked = _config.ShowBatteryHeadphones;
         _itemBatteryMouse.Checked = _config.ShowBatteryMouse;
@@ -534,6 +594,8 @@ public class TrayIconManager : IDisposable
     {
         _statsOverlay.Hide();
         _statsOverlay.Dispose();
+        _batteryOverlay.Hide();
+        _batteryOverlay.Dispose();
         _hardwareMonitor.Dispose();
         _batteryMonitor.Dispose();
         _listener.Dispose();

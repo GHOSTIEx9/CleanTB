@@ -41,6 +41,9 @@ public class AppConfig
 
     // Peripheral Battery HUD Settings
     public bool ShowBatteryStats { get; set; } = true;
+    public StatsPosition BatteryPosition { get; set; } = StatsPosition.Right;
+    public int? BatteryCustomX { get; set; } = null;
+    public int? BatteryCustomY { get; set; } = null;
     public bool ShowBatteryHeadphones { get; set; } = true;
     public bool ShowBatteryMouse { get; set; } = true;
     public bool ShowBatteryKeyboard { get; set; } = true;
