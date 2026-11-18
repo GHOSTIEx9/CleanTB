@@ -375,6 +375,8 @@ public class TaskbarStatsOverlay : Form
 
     private const int WM_DPICHANGED = 0x02E0;
 
+    public bool IsOverlayVisible => IsHandleCreated && IsWindowVisible(Handle);
+
     protected override void WndProc(ref Message m)
     {
         if (m.Msg == WM_DPICHANGED)
@@ -446,7 +448,7 @@ public class TaskbarStatsOverlay : Form
         // 1. If stats overlay is disabled in settings, ensure hidden
         if (!shouldShow)
         {
-            if (Visible)
+            if (IsOverlayVisible)
             {
                 ShowWindow(Handle, SW_HIDE);
             }
@@ -457,7 +459,7 @@ public class TaskbarStatsOverlay : Form
         bool isFullscreen = IsFullscreenWindowActive();
         if (isFullscreen)
         {
-            if (Visible)
+            if (IsOverlayVisible)
             {
                 _isHiddenByFullscreen = true;
                 ShowWindow(Handle, SW_HIDE);
@@ -471,7 +473,7 @@ public class TaskbarStatsOverlay : Form
         {
             if (trayRect.Height <= 4)
             {
-                if (Visible) ShowWindow(Handle, SW_HIDE);
+                if (IsOverlayVisible) ShowWindow(Handle, SW_HIDE);
                 return;
             }
 
@@ -482,14 +484,14 @@ public class TaskbarStatsOverlay : Form
                 // Auto-hidden taskbar slides off screen, leaving only <= 4px peeking
                 if (trayRect.Top >= mi.rcMonitor.Bottom - 4 || trayRect.Bottom <= mi.rcMonitor.Top + 4)
                 {
-                    if (Visible) ShowWindow(Handle, SW_HIDE);
+                    if (IsOverlayVisible) ShowWindow(Handle, SW_HIDE);
                     return;
                 }
             }
         }
 
         // 4. Restore visibility if coming back from fullscreen or hidden
-        if (_isHiddenByFullscreen || !Visible)
+        if (_isHiddenByFullscreen || !IsOverlayVisible)
         {
             _isHiddenByFullscreen = false;
             ShowWindow(Handle, SW_SHOWNOACTIVATE);
@@ -635,7 +637,7 @@ public class TaskbarStatsOverlay : Form
                     trayEdge = trayRect.Right - (int)Math.Round(140f * _dpiScale);
                 }
 
-                if (_batteryOverlay != null && _batteryOverlay.Visible && _config.BatteryPosition == StatsPosition.Right && !_config.BatteryCustomX.HasValue)
+                if (_batteryOverlay != null && _batteryOverlay.IsOverlayVisible && _config.BatteryPosition == StatsPosition.Right && !_config.BatteryCustomX.HasValue)
                 {
                     targetX = _batteryOverlay.Location.X - Width - (int)Math.Round(8f * _dpiScale);
                 }

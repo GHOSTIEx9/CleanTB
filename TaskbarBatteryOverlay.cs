@@ -203,6 +203,9 @@ public class TaskbarBatteryOverlay : Form
 
         Size = new Size(120, Math.Max(26, (int)Math.Ceiling(_fontLineHeight + 8f)));
 
+        // Create window handle immediately so BeginInvoke and Win32 messages work reliably from start
+        CreateControl();
+
         _winEventProc = (hHook, evt, hwnd, idObj, idChild, thread, time) =>
         {
             if (IsHandleCreated && !IsDisposed)
@@ -227,14 +230,19 @@ public class TaskbarBatteryOverlay : Form
 
         _batteryMonitor.BatteryUpdated += devices =>
         {
-            if (IsHandleCreated && !IsDisposed)
+            if (IsDisposed) return;
+            try
             {
-                try
+                if (IsHandleCreated)
                 {
                     BeginInvoke(new Action(CheckVisibilityAndRender));
                 }
-                catch { }
+                else
+                {
+                    CheckVisibilityAndRender();
+                }
             }
+            catch { }
         };
 
         MouseDown += OnMouseDown;
@@ -351,6 +359,9 @@ public class TaskbarBatteryOverlay : Form
     }
 
     private const int WM_DPICHANGED = 0x02E0;
+    private const int WM_DEVICECHANGE = 0x0219;
+
+    public bool IsOverlayVisible => IsHandleCreated && IsWindowVisible(Handle);
 
     protected override void WndProc(ref Message m)
     {
@@ -359,6 +370,10 @@ public class TaskbarBatteryOverlay : Form
             RecomputeDpiAndDimensions();
             UpdateDockPosition(force: true);
             RenderLayeredWindow();
+        }
+        else if (m.Msg == WM_DEVICECHANGE)
+        {
+            _batteryMonitor.ForceRefresh();
         }
         base.WndProc(ref m);
     }
@@ -431,16 +446,12 @@ public class TaskbarBatteryOverlay : Form
 
         if (!IsHandleCreated)
         {
-            if (shouldShow)
-            {
-                Show();
-            }
-            return;
+            CreateControl();
         }
 
         if (!shouldShow)
         {
-            if (Visible)
+            if (IsOverlayVisible)
             {
                 ShowWindow(Handle, SW_HIDE);
                 _statsOverlay?.UpdateDockPosition(force: true);
@@ -452,7 +463,7 @@ public class TaskbarBatteryOverlay : Form
         bool isFullscreen = IsFullscreenWindowActive();
         if (isFullscreen)
         {
-            if (Visible)
+            if (IsOverlayVisible)
             {
                 _isHiddenByFullscreen = true;
                 ShowWindow(Handle, SW_HIDE);
@@ -465,7 +476,7 @@ public class TaskbarBatteryOverlay : Form
         {
             if (trayRect.Height <= 4)
             {
-                if (Visible) ShowWindow(Handle, SW_HIDE);
+                if (IsOverlayVisible) ShowWindow(Handle, SW_HIDE);
                 return;
             }
 
@@ -475,13 +486,13 @@ public class TaskbarBatteryOverlay : Form
             {
                 if (trayRect.Top >= mi.rcMonitor.Bottom - 4 || trayRect.Bottom <= mi.rcMonitor.Top + 4)
                 {
-                    if (Visible) ShowWindow(Handle, SW_HIDE);
+                    if (IsOverlayVisible) ShowWindow(Handle, SW_HIDE);
                     return;
                 }
             }
         }
 
-        if (_isHiddenByFullscreen || !Visible)
+        if (_isHiddenByFullscreen || !IsOverlayVisible)
         {
             _isHiddenByFullscreen = false;
             ShowWindow(Handle, SW_SHOWNOACTIVATE);
@@ -490,6 +501,7 @@ public class TaskbarBatteryOverlay : Form
 
         UpdateDockPosition();
         RenderLayeredWindow();
+        _statsOverlay?.UpdateDockPosition(force: true);
     }
 
     private bool IsFullscreenWindowActive()
@@ -583,7 +595,7 @@ public class TaskbarBatteryOverlay : Form
             if (_config.BatteryPosition == StatsPosition.Left)
             {
                 // If hardware stats is also on the left and visible (and not custom-dragged), dock immediately to its right
-                if (_statsOverlay != null && _statsOverlay.Visible && _config.StatsPosition == StatsPosition.Left && !_config.StatsCustomX.HasValue)
+                if (_statsOverlay != null && _statsOverlay.IsOverlayVisible && _config.StatsPosition == StatsPosition.Left && !_config.StatsCustomX.HasValue)
                 {
                     targetX = _statsOverlay.Location.X + _statsOverlay.Width + (int)Math.Round(8f * _dpiScale);
                 }

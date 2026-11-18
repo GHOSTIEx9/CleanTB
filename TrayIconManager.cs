@@ -95,31 +95,35 @@ public class TrayIconManager : IDisposable
         _statsOverlay = new TaskbarStatsOverlay(_config, _hardwareMonitor, _contextMenu, _batteryOverlay);
         _batteryOverlay.SetStatsOverlay(_statsOverlay);
 
-        if (_config.ShowBatteryStats && _batteryOverlay.HasActiveBatteryDevices())
+        if (_config.ShowBatteryStats)
         {
-            _batteryOverlay.Show();
             _batteryOverlay.CheckVisibilityAndRender();
         }
 
         if (_config.ShowHardwareStats)
         {
-            _statsOverlay.Show();
             _statsOverlay.CheckVisibilityAndRender();
         }
 
-        // Window message listener for TaskbarCreated & DisplayChange
-        _listener = new TaskbarMessageListener(() =>
-        {
-            _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
-            if (_config.ShowBatteryStats && !_batteryOverlay.IsDisposed)
+        // Window message listener for TaskbarCreated, DisplayChange, and DeviceChange (instant wireless plug/unplug)
+        _listener = new TaskbarMessageListener(
+            onRefreshNeeded: () =>
             {
-                _batteryOverlay.CheckVisibilityAndRender();
-            }
-            if (_config.ShowHardwareStats && !_statsOverlay.IsDisposed)
+                _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+                if (_config.ShowBatteryStats && !_batteryOverlay.IsDisposed)
+                {
+                    _batteryOverlay.CheckVisibilityAndRender();
+                }
+                if (_config.ShowHardwareStats && !_statsOverlay.IsDisposed)
+                {
+                    _statsOverlay.CheckVisibilityAndRender();
+                }
+            },
+            onDeviceChange: () =>
             {
-                _statsOverlay.CheckVisibilityAndRender();
+                _batteryMonitor.ForceRefresh();
             }
-        });
+        );
 
         // Apply saved configuration on startup
         EnsureCorrectStartupPath();
@@ -611,11 +615,14 @@ public class TrayIconManager : IDisposable
 
         private readonly uint _wmTaskbarCreated;
         private const int WM_DISPLAYCHANGE = 0x007E;
+        private const int WM_DEVICECHANGE = 0x0219;
         private readonly Action _onRefreshNeeded;
+        private readonly Action _onDeviceChange;
 
-        public TaskbarMessageListener(Action onRefreshNeeded)
+        public TaskbarMessageListener(Action onRefreshNeeded, Action onDeviceChange)
         {
             _onRefreshNeeded = onRefreshNeeded;
+            _onDeviceChange = onDeviceChange;
             _wmTaskbarCreated = RegisterWindowMessage("TaskbarCreated");
 
             CreateHandle(new CreateParams
@@ -630,6 +637,10 @@ public class TrayIconManager : IDisposable
             if (m.Msg == _wmTaskbarCreated || m.Msg == WM_DISPLAYCHANGE)
             {
                 _onRefreshNeeded?.Invoke();
+            }
+            else if (m.Msg == WM_DEVICECHANGE)
+            {
+                _onDeviceChange?.Invoke();
             }
             base.WndProc(ref m);
         }
