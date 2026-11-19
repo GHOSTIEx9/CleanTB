@@ -57,6 +57,11 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _itemBatteryPreview = null!;
     private ToolStripMenuItem _itemBatteryResetPos = null!;
 
+    // Menu items - Updates
+    private ToolStripMenuItem _itemCheckUpdates = null!;
+    private ToolStripMenuItem _itemAutoUpdate = null!;
+    private System.Windows.Forms.Timer? _autoUpdateTimer;
+
     public TrayIconManager(TaskbarController controller, AppConfig config)
     {
         _controller = controller;
@@ -130,6 +135,20 @@ public class TrayIconManager : IDisposable
         EnsureCorrectStartupPath();
         UpdateMenuStates();
         _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+
+        if (_config.AutoCheckUpdates)
+        {
+            // Delay background check by 6 seconds so CleanTB boots instantly without network waiting
+            _autoUpdateTimer = new System.Windows.Forms.Timer { Interval = 6000 };
+            _autoUpdateTimer.Tick += async (s, e) =>
+            {
+                _autoUpdateTimer.Stop();
+                _autoUpdateTimer.Dispose();
+                _autoUpdateTimer = null;
+                await UpdateManager.CheckForUpdatesAsync(_config, isManualCheck: false);
+            };
+            _autoUpdateTimer.Start();
+        }
     }
 
     private void BuildMenu()
@@ -402,6 +421,23 @@ public class TrayIconManager : IDisposable
 
         _contextMenu.Items.Add(new ToolStripSeparator());
 
+        _itemCheckUpdates = new ToolStripMenuItem("Check for Updates...", null, async (s, e) =>
+        {
+            await UpdateManager.CheckForUpdatesAsync(_config, isManualCheck: true);
+        });
+
+        _itemAutoUpdate = new ToolStripMenuItem("Auto-Check for Updates", null, (s, e) =>
+        {
+            _config.AutoCheckUpdates = !_config.AutoCheckUpdates;
+            _config.Save();
+            UpdateMenuStates();
+        });
+
+        _contextMenu.Items.Add(_itemCheckUpdates);
+        _contextMenu.Items.Add(_itemAutoUpdate);
+
+        _contextMenu.Items.Add(new ToolStripSeparator());
+
         var itemRefresh = new ToolStripMenuItem("Refresh Taskbar", null, (s, e) =>
         {
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
@@ -519,8 +555,9 @@ public class TrayIconManager : IDisposable
 
         _itemHideBorder.Checked = _config.HideBorder;
         _itemStartup.Checked = IsStartupEnabled();
+        _itemAutoUpdate.Checked = _config.AutoCheckUpdates;
 
-        _itemHeader.Text = $"CleanTB (Mode: {_config.Mode})";
+        _itemHeader.Text = $"CleanTB v{UpdateManager.CurrentVersion} (Mode: {_config.Mode})";
         _notifyIcon.Text = $"CleanTB: {_config.Mode}";
     }
 
@@ -608,6 +645,9 @@ public class TrayIconManager : IDisposable
 
     public void Dispose()
     {
+        _autoUpdateTimer?.Stop();
+        _autoUpdateTimer?.Dispose();
+        _autoUpdateTimer = null;
         _statsOverlay.Hide();
         _statsOverlay.Dispose();
         _batteryOverlay.Hide();

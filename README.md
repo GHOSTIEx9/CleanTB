@@ -66,7 +66,8 @@ Engineered with pure native Win32 APIs and zero bulky UI frameworks, CleanTB idl
 
 ### ⚡ Quick & Simple Controls
 - **Left-Click Tray Icon**: Instantly toggle between **Clear** (Transparent) and **Normal** Windows mode.
-- **Right-Click Tray Icon**: Access all customization options, styles, device toggles, and placement settings.
+- **Right-Click Tray Icon**: Access all customization options, styles, device toggles, placement settings, and update management.
+- **1-Click Auto-Updates**: Check for updates and download latest releases directly from GitHub with seamless in-place restart.
 - **Start with Windows**: Toggle automatic startup on or off with a single click.
 
 ---
@@ -132,9 +133,9 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 
 ## 🔐 Privacy & Zero Telemetry
 
-CleanTB is built with a strict offline, privacy-first design:
-- **Zero Internet Access**: CleanTB contains no networking sockets or web endpoints.
-- **Zero Telemetry or Analytics**: CleanTB never tracks, records, or uploads user data.
+CleanTB is built with a strict privacy-first design:
+- **Zero Telemetry or Analytics**: CleanTB never tracks, collects, or uploads user data or analytics.
+- **GitHub-Only Network Access**: Network requests are exclusively restricted to querying public GitHub Releases API for update checks (can be disabled anytime via the tray menu).
 - **Local Storage**: All settings are stored locally in a plain text `config.json` inside the app directory.
 
 ---

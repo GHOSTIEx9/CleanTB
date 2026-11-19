@@ -51,6 +51,9 @@ public class AppConfig
     public bool ShowBatteryOther { get; set; } = true;
     public bool BatteryPreviewMode { get; set; } = false;
 
+    // Automatic Update Check
+    public bool AutoCheckUpdates { get; set; } = true;
+
     private static readonly string ConfigPath = Path.Combine(
         AppDomain.CurrentDomain.BaseDirectory,
         "config.json"
