@@ -102,24 +102,12 @@ CleanTB runs quietly in your **System Tray** (near the clock):
 
 ## 📦 Download & Run
 
-CleanTB is **100% self-contained** — no extra dependencies (like .NET Desktop Runtime or Visual C++ runtimes), no installation wizard, and no administrator privileges required.
+CleanTB is **100% self-contained and portable** — no installer, no wizard, no extra dependencies (like .NET Desktop Runtime or Visual C++ runtimes), and zero administrator privileges required.
 
-Choose whichever method you prefer:
-
-### ⚡ Option 1: Direct Standalone Executable (Quickest & Easiest)
 1. Download **`CleanTB.exe`** directly from the [Releases](https://github.com/GHOSTIEx9/CleanTB/releases) page.
-2. Double-click **`CleanTB.exe`** anywhere (Downloads, Desktop, USB).
-3. CleanTB launches immediately into your system tray — zero setup, zero extra files required!
-   * *Tip: Right-click the tray icon and toggle **Start with Windows** to keep it running on boot.*
-
-### 📦 Option 2: 1-Click Installer
-1. Download **`CleanTB-Setup.exe`** from [Releases](https://github.com/GHOSTIEx9/CleanTB/releases).
-2. Run `CleanTB-Setup.exe` — installs in 1 second without any annoying wizard prompts or UAC admin popups.
-3. Automatically creates a Start Menu shortcut and registers a clean uninstaller in Windows Settings.
-
-### 📁 Option 3: Portable ZIP Archive
-1. Download **`CleanTB-Portable.zip`** from [Releases](https://github.com/GHOSTIEx9/CleanTB/releases).
-2. Extract the folder anywhere and double-click `CleanTB.exe`.
+2. Double-click **`CleanTB.exe`** anywhere (Desktop, Downloads, or any folder of your choice).
+3. CleanTB launches immediately into your system tray — ready in < 0.1 seconds!
+   * *Tip: Right-click the tray icon and toggle **Start with Windows** to keep it running automatically on boot.*
 
 ---
 
@@ -128,7 +116,6 @@ Choose whichever method you prefer:
 ### Prerequisites
 - Windows 10 (1809+) or Windows 11
 - [.NET 8.0 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- Inno Setup 6 (optional, for building the installer)
 
 ### Build Steps
 
@@ -137,11 +124,8 @@ Choose whichever method you prefer:
 git clone https://github.com/GHOSTIEx9/CleanTB.git
 cd CleanTB
 
-# Build Release
-dotnet build -c Release
-
-# Publish self-contained single-file executable
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish_sc
+# Build & publish single-file standalone executable
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish_sc
 ```
 
 ---

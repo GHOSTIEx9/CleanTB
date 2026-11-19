@@ -18,7 +18,7 @@ Output/
 config.json
 crash.log
 
-## Built release artifacts in root (ignore local binaries, track installer)
+## Built release binaries in root (keep repository lean)
 /CleanTB.exe
 /CleanTB-Setup.exe
 /CleanTB-Portable.zip
