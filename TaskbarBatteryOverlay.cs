@@ -203,8 +203,8 @@ public class TaskbarBatteryOverlay : Form
 
         Size = new Size(120, Math.Max(26, (int)Math.Ceiling(_fontLineHeight + 8f)));
 
-        // Create window handle immediately so BeginInvoke and Win32 messages work reliably from start
-        CreateControl();
+        // Force immediate HWND creation on the main UI STA thread so BeginInvoke and Win32 messages work reliably from start
+        _ = Handle;
 
         _winEventProc = (hHook, evt, hwnd, idObj, idChild, thread, time) =>
         {
@@ -233,7 +233,7 @@ public class TaskbarBatteryOverlay : Form
             if (IsDisposed) return;
             try
             {
-                if (IsHandleCreated)
+                if (InvokeRequired)
                 {
                     BeginInvoke(new Action(CheckVisibilityAndRender));
                 }
@@ -441,13 +441,18 @@ public class TaskbarBatteryOverlay : Form
     public void CheckVisibilityAndRender()
     {
         if (IsDisposed) return;
-
-        bool shouldShow = HasActiveBatteryDevices();
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(CheckVisibilityAndRender)); } catch { }
+            return;
+        }
 
         if (!IsHandleCreated)
         {
-            CreateControl();
+            _ = Handle;
         }
+
+        bool shouldShow = HasActiveBatteryDevices();
 
         if (!shouldShow)
         {
@@ -550,6 +555,13 @@ public class TaskbarBatteryOverlay : Form
 
     public void UpdateDockPosition(bool force = false)
     {
+        if (IsDisposed) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(() => UpdateDockPosition(force))); } catch { }
+            return;
+        }
+
         if (_isDragging && !force) return;
 
         if (_config.BatteryCustomX.HasValue && _config.BatteryCustomY.HasValue)

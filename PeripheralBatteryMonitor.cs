@@ -167,6 +167,10 @@ public class PeripheralBatteryMonitor : IDisposable
     {
         _config = config;
 
+        // Synchronous initial poll so connected devices and battery levels
+        // are cached BEFORE overlays initialize and query active devices
+        PollNow();
+
         // Debounce timer: batches connection arrival/removal bursts into a single swift scan
         _debounceTimer = new Timer(_ =>
         {
@@ -174,7 +178,7 @@ public class PeripheralBatteryMonitor : IDisposable
         }, null, Timeout.Infinite, Timeout.Infinite);
 
         // Active poll timer: runs every 3 seconds to catch any silent disconnects or percentage shifts
-        _pollTimer = new Timer(OnPollTick, null, 250, 3000);
+        _pollTimer = new Timer(OnPollTick, null, 3000, 3000);
     }
 
     public List<BatteryDeviceInfo> GetCurrentDevices()
@@ -332,6 +336,7 @@ public class PeripheralBatteryMonitor : IDisposable
             search.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_SEARCH_PARAMS));
             search.fReturnRemembered = true;
             search.fReturnAuthenticated = true;
+            search.fReturnConnected = true;
 
             var info = new BLUETOOTH_DEVICE_INFO();
             info.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_INFO));

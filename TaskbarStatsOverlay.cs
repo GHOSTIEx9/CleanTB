@@ -233,6 +233,9 @@ public class TaskbarStatsOverlay : Form
 
         Size = new Size(200, Math.Max(26, (int)Math.Ceiling(_fontLineHeight + 8f)));
 
+        // Force immediate HWND creation on main STA thread so BeginInvoke and Win32 messages work reliably from start
+        _ = Handle;
+
         // Foreground window event hook: instantly hide/unhide when apps enter or exit fullscreen
         _winEventProc = (hHook, evt, hwnd, idObj, idChild, thread, time) =>
         {
@@ -433,17 +436,18 @@ public class TaskbarStatsOverlay : Form
     public void CheckVisibilityAndRender()
     {
         if (IsDisposed) return;
-
-        bool shouldShow = _config.ShowHardwareStats;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(CheckVisibilityAndRender)); } catch { }
+            return;
+        }
 
         if (!IsHandleCreated)
         {
-            if (shouldShow)
-            {
-                Show();
-            }
-            return;
+            _ = Handle;
         }
+
+        bool shouldShow = _config.ShowHardwareStats;
 
         // 1. If stats overlay is disabled in settings, ensure hidden
         if (!shouldShow)
@@ -577,6 +581,13 @@ public class TaskbarStatsOverlay : Form
 
     public void UpdateDockPosition(bool force = false)
     {
+        if (IsDisposed) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(() => UpdateDockPosition(force))); } catch { }
+            return;
+        }
+
         if (_isDragging && !force) return;
 
         if (_config.StatsCustomX.HasValue && _config.StatsCustomY.HasValue)
