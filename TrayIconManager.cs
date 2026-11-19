@@ -116,14 +116,7 @@ public class TrayIconManager : IDisposable
             onRefreshNeeded: () =>
             {
                 _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
-                if (_config.ShowBatteryStats && !_batteryOverlay.IsDisposed)
-                {
-                    _batteryOverlay.CheckVisibilityAndRender();
-                }
-                if (_config.ShowHardwareStats && !_statsOverlay.IsDisposed)
-                {
-                    _statsOverlay.CheckVisibilityAndRender();
-                }
+                ReassertOverlaysOnTop();
             },
             onDeviceChange: () =>
             {
@@ -135,6 +128,7 @@ public class TrayIconManager : IDisposable
         EnsureCorrectStartupPath();
         UpdateMenuStates();
         _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+        ReassertOverlaysOnTop();
 
         if (_config.AutoCheckUpdates)
         {
@@ -398,6 +392,7 @@ public class TrayIconManager : IDisposable
             _config.Save();
             UpdateMenuStates();
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+            ReassertOverlaysOnTop();
         });
 
         _itemStartup = new ToolStripMenuItem("Start with Windows", null, (s, e) =>
@@ -434,8 +429,7 @@ public class TrayIconManager : IDisposable
         {
             _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
             _batteryMonitor.ForceRefresh();
-            _batteryOverlay.CheckVisibilityAndRender();
-            _statsOverlay.CheckVisibilityAndRender();
+            ReassertOverlaysOnTop();
         });
 
         var itemAbout = new ToolStripMenuItem("About CleanTB", null, (s, e) =>
@@ -479,6 +473,33 @@ public class TrayIconManager : IDisposable
         _config.Save();
         UpdateMenuStates();
         _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+        ReassertOverlaysOnTop();
+    }
+
+    private void ReassertOverlaysOnTop()
+    {
+        if (_config.ShowBatteryStats && !_batteryOverlay.IsDisposed)
+        {
+            _batteryOverlay.CheckVisibilityAndRender();
+            _batteryOverlay.BringToTopMost();
+        }
+        if (_config.ShowHardwareStats && !_statsOverlay.IsDisposed)
+        {
+            _statsOverlay.CheckVisibilityAndRender();
+            _statsOverlay.BringToTopMost();
+        }
+
+        // Explorer's DirectComposition and XAML tree updates asynchronously after setting taskbar appearance.
+        // Schedule staggered re-assertions so HUD overlays stay on top across all modes (Blur, Acrylic, Tinted, Normal).
+        int[] delays = { 50, 150, 300, 600 };
+        foreach (int delay in delays)
+        {
+            Task.Delay(delay).ContinueWith(_ =>
+            {
+                if (!_batteryOverlay.IsDisposed) _batteryOverlay.BringToTopMost();
+                if (!_statsOverlay.IsDisposed) _statsOverlay.BringToTopMost();
+            });
+        }
     }
 
     private void UpdateMenuStates()

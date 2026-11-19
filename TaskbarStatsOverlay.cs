@@ -114,6 +114,15 @@ public class TaskbarStatsOverlay : Form
     [DllImport("user32.dll")]
     private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    private static readonly IntPtr HWND_TOPMOST = new IntPtr(-1);
+    private const uint SWP_NOSIZE = 0x0001;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_SHOWWINDOW = 0x0040;
+
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(IntPtr hWnd);
@@ -399,6 +408,7 @@ public class TaskbarStatsOverlay : Form
             cp.ExStyle |= 0x00080000; // WS_EX_LAYERED (True per-pixel alpha rendering)
             cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW (Hidden from Alt+Tab)
             cp.ExStyle |= 0x08000000; // WS_EX_NOACTIVATE (Does not steal focus)
+            cp.ExStyle |= 0x00000008; // WS_EX_TOPMOST (Always stay on top of taskbar)
 
             if (_config?.StatsClickThrough == true)
             {
@@ -412,7 +422,27 @@ public class TaskbarStatsOverlay : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         RecomputeDpiAndDimensions();
+    }
+
+    public void BringToTopMost()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action(BringToTopMost)); } catch { }
+            return;
+        }
+
+        try
+        {
+            if (_config.ShowHardwareStats && !_isHiddenByFullscreen)
+            {
+                SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            }
+        }
+        catch { }
     }
 
     public void SetClickThrough(bool clickThrough)
@@ -499,11 +529,17 @@ public class TaskbarStatsOverlay : Form
         {
             _isHiddenByFullscreen = false;
             ShowWindow(Handle, SW_SHOWNOACTIVATE);
+            SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
             UpdateDockPosition(force: true);
+        }
+        else
+        {
+            SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
 
         UpdateDockPosition();
         RenderLayeredWindow();
+        SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     private bool IsFullscreenWindowActive()
@@ -922,6 +958,8 @@ public class TaskbarStatsOverlay : Form
                     ref blend,
                     ULW_ALPHA
                 );
+
+                SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
             }
             finally
             {
