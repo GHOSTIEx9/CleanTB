@@ -6,6 +6,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Windows.Forms;
 
 namespace CleanTB;
@@ -64,7 +65,10 @@ public class TaskbarBatteryOverlay : Form
     private const int SW_HIDE = 0;
     private const int SW_SHOWNOACTIVATE = 4;
     private const uint MONITOR_DEFAULTTONEAREST = 2;
+    private const int DWMWA_DISALLOW_PEEK = 11;
+    private const int DWMWA_EXCLUDED_FROM_PEEK = 12;
     private const int DWMWA_CLOAKED = 14;
+    private const int WM_DWMCOMPOSITIONCHANGED = 0x031E;
 
     private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
     private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
@@ -139,6 +143,16 @@ public class TaskbarBatteryOverlay : Form
 
     [DllImport("dwmapi.dll")]
     private static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
+
+    [DllImport("dwmapi.dll", PreserveSig = true)]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsZoomed(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
 
     [DllImport("user32.dll")]
     private static extern uint GetDpiForWindow(IntPtr hWnd);
@@ -384,6 +398,11 @@ public class TaskbarBatteryOverlay : Form
         {
             _batteryMonitor.ForceRefresh();
         }
+        else if (m.Msg == WM_DWMCOMPOSITIONCHANGED)
+        {
+            ApplyDwmAttributes();
+            BringToTopMost();
+        }
         base.WndProc(ref m);
     }
 
@@ -410,7 +429,24 @@ public class TaskbarBatteryOverlay : Form
     {
         base.OnHandleCreated(e);
         SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        ApplyDwmAttributes();
         RecomputeDpiAndDimensions();
+    }
+
+    private void ApplyDwmAttributes()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        try
+        {
+            // Exclude from Aero Peek so thumbnail hover / desktop peek does NOT fade this overlay to glass
+            int excludeFromPeek = 1;
+            DwmSetWindowAttribute(Handle, DWMWA_EXCLUDED_FROM_PEEK, ref excludeFromPeek, sizeof(int));
+
+            // Disallow invoking peek directly on the overlay
+            int disallowPeek = 1;
+            DwmSetWindowAttribute(Handle, DWMWA_DISALLOW_PEEK, ref disallowPeek, sizeof(int));
+        }
+        catch { }
     }
 
     public void BringToTopMost()
@@ -427,6 +463,7 @@ public class TaskbarBatteryOverlay : Form
             if (HasActiveBatteryDevices() && !_isHiddenByFullscreen)
             {
                 SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                ApplyDwmAttributes();
             }
         }
         catch { }
@@ -532,11 +569,13 @@ public class TaskbarBatteryOverlay : Form
             _isHiddenByFullscreen = false;
             ShowWindow(Handle, SW_SHOWNOACTIVATE);
             SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            ApplyDwmAttributes();
             UpdateDockPosition(force: true);
         }
         else
         {
             SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            ApplyDwmAttributes();
         }
 
         UpdateDockPosition();
@@ -561,6 +600,23 @@ public class TaskbarBatteryOverlay : Form
             IntPtr hProgman = FindWindow("Progman", null);
             IntPtr hWorkerW = FindWindow("WorkerW", null);
             if (hForeground == hProgman || hForeground == hWorkerW) return false;
+
+            // Maximized windows respect the work area and do not cover the taskbar
+            if (IsZoomed(hForeground)) return false;
+
+            // Exclude taskbar flyouts, thumbnail previews, and shell popups
+            StringBuilder sb = new StringBuilder(64);
+            if (GetClassName(hForeground, sb, sb.Capacity) > 0)
+            {
+                string cls = sb.ToString();
+                if (cls.StartsWith("Shell_", StringComparison.OrdinalIgnoreCase) ||
+                    cls.StartsWith("TaskList", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Equals("XamlExplorerHostIslandWindow", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Equals("TopLevelWindowForOverflowXamlIsland", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
 
             if (!IsWindowVisible(hForeground)) return false;
 
