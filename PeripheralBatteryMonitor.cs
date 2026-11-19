@@ -1,16 +1,11 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Timer = System.Threading.Timer;
-using Windows.Devices.Bluetooth;
-using Windows.Devices.Bluetooth.GenericAttributeProfile;
-using Windows.Devices.Enumeration;
-using Windows.Foundation;
-using Windows.Storage.Streams;
 
 namespace CleanTB;
 
@@ -51,7 +46,59 @@ public class PeripheralBatteryMonitor : IDisposable
     [DllImport("xinput9_1_0.dll", EntryPoint = "XInputGetBatteryInformation")]
     private static extern int XInputGetBatteryInformation91(int dwUserIndex, byte devType, ref XINPUT_BATTERY_INFORMATION pBatteryInformation);
 
-    // Win32 SetupAPI for reading PnP device properties (same source Windows Settings uses for DEVPKEY_Device_BatteryLifePercent)
+    // Win32 Bluetooth APIs for checking Bluetooth Classic connection status
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BLUETOOTH_ADDRESS
+    {
+        public ulong ullLong;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct BLUETOOTH_DEVICE_INFO
+    {
+        public uint dwSize;
+        public BLUETOOTH_ADDRESS Address;
+        public uint ulClassofDevice;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fConnected;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fRemembered;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fAuthenticated;
+        public ushort wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds;
+        public ushort wYearUsed, wMonthUsed, wDayOfWeekUsed, wDayUsed, wHourUsed, wMinuteUsed, wSecondUsed, wMillisecondsUsed;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 248)]
+        public string szName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BLUETOOTH_DEVICE_SEARCH_PARAMS
+    {
+        public uint dwSize;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fReturnAuthenticated;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fReturnRemembered;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fReturnUnknown;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fReturnConnected;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fIssueInquiry;
+        public byte cTimeoutMultiplier;
+        public IntPtr hRadio;
+    }
+
+    [DllImport("bluetoothapis.dll", SetLastError = true)]
+    private static extern IntPtr BluetoothFindFirstDevice(ref BLUETOOTH_DEVICE_SEARCH_PARAMS psp, ref BLUETOOTH_DEVICE_INFO pbdi);
+
+    [DllImport("bluetoothapis.dll", SetLastError = true)]
+    private static extern bool BluetoothFindNextDevice(IntPtr hFind, ref BLUETOOTH_DEVICE_INFO pbdi);
+
+    [DllImport("bluetoothapis.dll", SetLastError = true)]
+    private static extern bool BluetoothFindDeviceClose(IntPtr hFind);
+
+    // Win32 SetupAPI for reading PnP device properties (the exact source Windows Settings uses)
     [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr SetupDiGetClassDevs(IntPtr ClassGuid, string? Enumerator, IntPtr hwndParent, uint Flags);
 
@@ -74,7 +121,7 @@ public class PeripheralBatteryMonitor : IDisposable
     private static extern bool SetupDiGetDeviceInstanceIdW(
         IntPtr DeviceInfoSet,
         ref SP_DEVINFO_DATA DeviceInfoData,
-        char[] DeviceInstanceId,
+        [Out] StringBuilder DeviceInstanceId,
         uint DeviceInstanceIdSize,
         out uint RequiredSize
     );
@@ -101,20 +148,18 @@ public class PeripheralBatteryMonitor : IDisposable
     private static readonly DEVPROPKEY PKEY_Device_FriendlyName = new() { fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), pid = 14 };
     private static readonly DEVPROPKEY PKEY_Device_DeviceDesc = new() { fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), pid = 2 };
     private static readonly DEVPROPKEY PKEY_Device_BatteryLifePercent = new() { fmtid = new Guid("104ea319-6ee2-4701-bd47-8ddbf425bbe5"), pid = 2 };
+    private static readonly DEVPROPKEY PKEY_Device_IsConnected = new() { fmtid = new Guid("83da6326-97a6-4088-9453-a1923f573b29"), pid = 15 };
 
     private const uint DIGCF_PRESENT = 0x00000002;
     private const uint DIGCF_ALLCLASSES = 0x00000004;
 
     private readonly AppConfig _config;
-    private readonly System.Threading.Timer _pollTimer;
-    private readonly System.Threading.Timer _debounceTimer;
+    private readonly Timer _pollTimer;
+    private readonly Timer _debounceTimer;
     private readonly object _lock = new();
     private List<BatteryDeviceInfo> _devices = new();
     private bool _isDisposed;
     private int _pollingActive;
-
-    private DeviceWatcher? _bthWatcher;
-    private DeviceWatcher? _bleWatcher;
 
     public event Action<List<BatteryDeviceInfo>>? BatteryUpdated;
 
@@ -125,45 +170,11 @@ public class PeripheralBatteryMonitor : IDisposable
         // Debounce timer: batches connection arrival/removal bursts into a single swift scan
         _debounceTimer = new Timer(_ =>
         {
-            _ = PollAsync();
+            PollNow();
         }, null, Timeout.Infinite, Timeout.Infinite);
 
         // Active poll timer: runs every 3 seconds to catch any silent disconnects or percentage shifts
-        _pollTimer = new Timer(OnPollTick, null, 500, 3000);
-
-        // Real-time Windows DeviceWatchers for immediate Bluetooth & BLE connection events
-        StartDeviceWatchers();
-    }
-
-    private void StartDeviceWatchers()
-    {
-        try
-        {
-            string bthAqs = BluetoothDevice.GetDeviceSelectorFromPairingState(true);
-            _bthWatcher = DeviceInformation.CreateWatcher(bthAqs, new[] {
-                "System.ItemNameDisplay",
-                "System.Devices.Aep.IsConnected"
-            });
-            _bthWatcher.Added += (w, info) => ForceRefresh();
-            _bthWatcher.Updated += (w, update) => ForceRefresh();
-            _bthWatcher.Removed += (w, update) => ForceRefresh();
-            _bthWatcher.Start();
-        }
-        catch { }
-
-        try
-        {
-            string bleAqs = BluetoothLEDevice.GetDeviceSelectorFromPairingState(true);
-            _bleWatcher = DeviceInformation.CreateWatcher(bleAqs, new[] {
-                "System.ItemNameDisplay",
-                "System.Devices.Aep.IsConnected"
-            });
-            _bleWatcher.Added += (w, info) => ForceRefresh();
-            _bleWatcher.Updated += (w, update) => ForceRefresh();
-            _bleWatcher.Removed += (w, update) => ForceRefresh();
-            _bleWatcher.Start();
-        }
-        catch { }
+        _pollTimer = new Timer(OnPollTick, null, 250, 3000);
     }
 
     public List<BatteryDeviceInfo> GetCurrentDevices()
@@ -195,8 +206,8 @@ public class PeripheralBatteryMonitor : IDisposable
         if (_isDisposed) return;
         try
         {
-            // Debounce for 350ms to allow Bluetooth connection/disconnection handshake to settle
-            _debounceTimer.Change(350, Timeout.Infinite);
+            // Debounce for 200ms to allow Bluetooth connection/disconnection handshake to settle
+            _debounceTimer.Change(200, Timeout.Infinite);
         }
         catch { }
     }
@@ -204,24 +215,12 @@ public class PeripheralBatteryMonitor : IDisposable
     private void OnPollTick(object? state)
     {
         if (_isDisposed) return;
-        _ = PollAsync();
+        PollNow();
     }
 
-    private static async Task<T?> RunWithTimeout<T>(IAsyncOperation<T> op, int timeoutMs = 1500)
+    private void PollNow()
     {
-        using var cts = new CancellationTokenSource(timeoutMs);
-        try
-        {
-            return await op.AsTask(cts.Token);
-        }
-        catch
-        {
-            return default;
-        }
-    }
-
-    private async Task PollAsync()
-    {
+        if (_isDisposed) return;
         if (Interlocked.Exchange(ref _pollingActive, 1) != 0)
             return;
 
@@ -232,16 +231,9 @@ public class PeripheralBatteryMonitor : IDisposable
             // 1. Query XInput Wireless Controllers (Xbox 360, One, Series, etc.)
             PollXInputControllers(found);
 
-            // 2. Query SetupAPI PnP Devices (this is the EXACT source Windows Settings uses for DEVPKEY_Device_BatteryLifePercent)
+            // 2. Query SetupAPI PnP Devices with strict connected validation
             // Instantly captures all Bluetooth headphones, headsets (HFP / hands-free), Bluetooth keyboards, mice, earbuds, styluses, etc.
             PollSetupDiDevices(found);
-
-            // 3. Query Windows Runtime Bluetooth Low Energy Devices (GATT Battery Service 0x180F) for low-energy peripherals
-            try
-            {
-                await PollBleDevicesAsync(found);
-            }
-            catch { }
 
             bool changed;
             lock (_lock)
@@ -331,8 +323,58 @@ public class PeripheralBatteryMonitor : IDisposable
         }
     }
 
+    private static HashSet<string> GetConnectedClassicBluetoothMacs()
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var search = new BLUETOOTH_DEVICE_SEARCH_PARAMS();
+            search.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_SEARCH_PARAMS));
+            search.fReturnRemembered = true;
+            search.fReturnAuthenticated = true;
+
+            var info = new BLUETOOTH_DEVICE_INFO();
+            info.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_INFO));
+
+            IntPtr hFind = BluetoothFindFirstDevice(ref search, ref info);
+            if (hFind != IntPtr.Zero)
+            {
+                try
+                {
+                    do
+                    {
+                        if (info.fConnected)
+                        {
+                            string mac = info.Address.ullLong.ToString("X12");
+                            set.Add(mac);
+                        }
+                        info = new BLUETOOTH_DEVICE_INFO();
+                        info.dwSize = (uint)Marshal.SizeOf(typeof(BLUETOOTH_DEVICE_INFO));
+                    } while (BluetoothFindNextDevice(hFind, ref info));
+                }
+                finally
+                {
+                    BluetoothFindDeviceClose(hFind);
+                }
+            }
+        }
+        catch { }
+        return set;
+    }
+
+    private static string ExtractMacFromInstanceId(string instanceId)
+    {
+        var m = Regex.Match(instanceId, @"(?:DEV_|&)([0-9a-fA-F]{12})(?:\\|_|$)");
+        if (m.Success) return m.Groups[1].Value.ToUpperInvariant();
+        var mAny = Regex.Match(instanceId, @"([0-9a-fA-F]{12})");
+        if (mAny.Success) return mAny.Groups[1].Value.ToUpperInvariant();
+        return string.Empty;
+    }
+
     private void PollSetupDiDevices(List<BatteryDeviceInfo> list)
     {
+        var classicConnectedMacs = GetConnectedClassicBluetoothMacs();
+
         IntPtr hDevInfo = SetupDiGetClassDevs(IntPtr.Zero, null, IntPtr.Zero, DIGCF_PRESENT | DIGCF_ALLCLASSES);
         if (hDevInfo == IntPtr.Zero || hDevInfo.ToInt64() == -1)
             return;
@@ -356,26 +398,53 @@ public class PeripheralBatteryMonitor : IDisposable
                             int battery = buf.Length > 0 ? (int)buf[0] : -1;
                             if (battery < 0 || battery > 100) continue;
 
+                            var sbId = new StringBuilder(512);
+                            SetupDiGetDeviceInstanceIdW(hDevInfo, ref devData, sbId, (uint)sbId.Capacity, out uint idReq);
+                            string instanceId = sbId.ToString();
+
+                            bool isBle = instanceId.StartsWith("BTHLE", StringComparison.OrdinalIgnoreCase);
+                            bool isBthEnum = instanceId.StartsWith("BTHENUM", StringComparison.OrdinalIgnoreCase);
+
+                            // CRITICAL CONNECTION CHECK:
+                            // 1. For BLE devices (e.g. Bluetooth Keyboard): query DEVPKEY_Device_IsConnected property.
+                            // When disconnected, Windows sets this property to False while leaving cached battery at 100%.
+                            if (isBle)
+                            {
+                                var connKey = PKEY_Device_IsConnected;
+                                byte[] connBuf = new byte[4];
+                                bool isConnected = false;
+                                if (SetupDiGetDevicePropertyW(hDevInfo, ref devData, ref connKey, out uint connType, connBuf, (uint)connBuf.Length, out uint connReq, 0))
+                                {
+                                    isConnected = (connBuf.Length > 0 && connBuf[0] != 0);
+                                }
+                                if (!isConnected)
+                                {
+                                    continue; // Skip disconnected BLE device!
+                                }
+                            }
+                            // 2. For Bluetooth Classic devices (e.g. G435 Headset): verify device MAC is actively connected.
+                            else if (isBthEnum)
+                            {
+                                string mac = ExtractMacFromInstanceId(instanceId);
+                                if (!string.IsNullOrEmpty(mac) && !classicConnectedMacs.Contains(mac))
+                                {
+                                    continue; // Skip disconnected Bluetooth Classic device!
+                                }
+                            }
+
                             string name = GetSetupDiString(hDevInfo, ref devData, PKEY_Device_FriendlyName);
                             if (string.IsNullOrEmpty(name))
                                 name = GetSetupDiString(hDevInfo, ref devData, PKEY_Device_DeviceDesc);
                             if (string.IsNullOrEmpty(name))
                                 name = "Wireless Device";
 
-                            string instanceId = GetSetupDiInstanceId(hDevInfo, ref devData);
                             string cleanName = CleanDeviceName(name);
                             var type = ClassifyDevice(cleanName);
-
-                            string mac = "";
-                            var m = Regex.Match(instanceId, @"([0-9a-fA-F]{12})");
-                            if (m.Success)
-                            {
-                                mac = m.Groups[1].Value.ToUpperInvariant();
-                            }
+                            string devMac = ExtractMacFromInstanceId(instanceId);
 
                             // Deduplicate: check if this device is already in the list
                             int existingIdx = list.FindIndex(d =>
-                                (!string.IsNullOrEmpty(mac) && d.Id.Contains(mac, StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrEmpty(devMac) && d.Id.Contains(devMac, StringComparison.OrdinalIgnoreCase)) ||
                                 string.Equals(d.Name, cleanName, StringComparison.OrdinalIgnoreCase)
                             );
 
@@ -414,121 +483,6 @@ public class PeripheralBatteryMonitor : IDisposable
         }
     }
 
-    private async Task PollBleDevicesAsync(List<BatteryDeviceInfo> list)
-    {
-        string aqs = BluetoothLEDevice.GetDeviceSelectorFromPairingState(true);
-        var devicesOp = DeviceInformation.FindAllAsync(aqs, new[] {
-            "System.ItemNameDisplay",
-            "System.Devices.Aep.IsConnected"
-        });
-        var devices = await RunWithTimeout(devicesOp, 2000);
-        if (devices == null) return;
-
-        foreach (var devInfo in devices)
-        {
-            try
-            {
-                bool isConnected = false;
-                if (devInfo.Properties.TryGetValue("System.Devices.Aep.IsConnected", out var connVal) && connVal is bool bConn)
-                {
-                    isConnected = bConn;
-                }
-
-                var bleOp = BluetoothLEDevice.FromIdAsync(devInfo.Id);
-                using var ble = await RunWithTimeout(bleOp, 1500);
-                if (ble == null) continue;
-
-                if (ble.ConnectionStatus == BluetoothConnectionStatus.Connected)
-                {
-                    isConnected = true;
-                }
-
-                // CRITICAL: If the device is not connected right now, ignore it!
-                if (!isConnected || ble.ConnectionStatus != BluetoothConnectionStatus.Connected)
-                {
-                    continue;
-                }
-
-                // Query GATT Battery Service
-                var sResult = await RunWithTimeout(ble.GetGattServicesForUuidAsync(GattServiceUuids.Battery, BluetoothCacheMode.Uncached), 1500);
-                if (sResult == null || sResult.Status != GattCommunicationStatus.Success || sResult.Services.Count == 0)
-                {
-                    sResult = await RunWithTimeout(ble.GetGattServicesForUuidAsync(GattServiceUuids.Battery, BluetoothCacheMode.Cached), 1000);
-                }
-
-                if (sResult != null && sResult.Status == GattCommunicationStatus.Success && sResult.Services.Count > 0)
-                {
-                    foreach (var service in sResult.Services)
-                    {
-                        using (service)
-                        {
-                            var cResult = await RunWithTimeout(service.GetCharacteristicsForUuidAsync(GattCharacteristicUuids.BatteryLevel), 1000);
-                            if (cResult != null && cResult.Status == GattCommunicationStatus.Success && cResult.Characteristics.Count > 0)
-                            {
-                                var characteristic = cResult.Characteristics[0];
-                                var rResult = await RunWithTimeout(characteristic.ReadValueAsync(BluetoothCacheMode.Uncached), 1000);
-                                if (rResult == null || rResult.Status != GattCommunicationStatus.Success)
-                                {
-                                    rResult = await RunWithTimeout(characteristic.ReadValueAsync(BluetoothCacheMode.Cached), 500);
-                                }
-
-                                if (rResult != null && rResult.Status == GattCommunicationStatus.Success && rResult.Value != null)
-                                {
-                                    using var reader = DataReader.FromBuffer(rResult.Value);
-                                    byte level = reader.ReadByte();
-                                    if (level <= 100)
-                                    {
-                                        string rawName = string.IsNullOrWhiteSpace(ble.Name) ? devInfo.Name : ble.Name;
-                                        string cleanName = CleanDeviceName(rawName);
-                                        var type = ClassifyDevice(cleanName);
-
-                                        string mac = "";
-                                        var m = Regex.Match(ble.DeviceId, @"([0-9a-fA-F]{12})");
-                                        if (m.Success)
-                                        {
-                                            mac = m.Groups[1].Value.ToUpperInvariant();
-                                        }
-
-                                        int existingIdx = list.FindIndex(d =>
-                                            (!string.IsNullOrEmpty(mac) && d.Id.Contains(mac, StringComparison.OrdinalIgnoreCase)) ||
-                                            string.Equals(d.Name, cleanName, StringComparison.OrdinalIgnoreCase)
-                                        );
-
-                                        if (existingIdx >= 0)
-                                        {
-                                            if (list[existingIdx].BatteryPercent < 0 && level >= 0)
-                                            {
-                                                list[existingIdx] = new BatteryDeviceInfo(
-                                                    ble.DeviceId,
-                                                    cleanName,
-                                                    type,
-                                                    level,
-                                                    true
-                                                );
-                                            }
-                                        }
-                                        else
-                                        {
-                                            list.Add(new BatteryDeviceInfo(
-                                                ble.DeviceId,
-                                                cleanName,
-                                                type,
-                                                level,
-                                                true
-                                            ));
-                                        }
-                                        break; // Captured battery for this device
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            catch { }
-        }
-    }
-
     private static string GetSetupDiString(IntPtr hDevInfo, ref SP_DEVINFO_DATA devData, DEVPROPKEY key)
     {
         if (!SetupDiGetDevicePropertyW(hDevInfo, ref devData, ref key, out uint propType, null, 0, out uint reqSize, 0))
@@ -538,19 +492,9 @@ public class PeripheralBatteryMonitor : IDisposable
                 byte[] buf = new byte[reqSize];
                 if (SetupDiGetDevicePropertyW(hDevInfo, ref devData, ref key, out propType, buf, reqSize, out reqSize, 0))
                 {
-                    return System.Text.Encoding.Unicode.GetString(buf).TrimEnd('\0');
+                    return Encoding.Unicode.GetString(buf).TrimEnd('\0');
                 }
             }
-        }
-        return string.Empty;
-    }
-
-    private static string GetSetupDiInstanceId(IntPtr hDevInfo, ref SP_DEVINFO_DATA devData)
-    {
-        char[] buf = new char[512];
-        if (SetupDiGetDeviceInstanceIdW(hDevInfo, ref devData, buf, (uint)buf.Length, out uint reqSize) && reqSize > 1)
-        {
-            return new string(buf, 0, (int)reqSize - 1);
         }
         return string.Empty;
     }
@@ -632,29 +576,5 @@ public class PeripheralBatteryMonitor : IDisposable
         _isDisposed = true;
         _pollTimer.Dispose();
         _debounceTimer.Dispose();
-
-        if (_bthWatcher != null)
-        {
-            try
-            {
-                if (_bthWatcher.Status == DeviceWatcherStatus.Started || _bthWatcher.Status == DeviceWatcherStatus.EnumerationCompleted)
-                {
-                    _bthWatcher.Stop();
-                }
-            }
-            catch { }
-        }
-
-        if (_bleWatcher != null)
-        {
-            try
-            {
-                if (_bleWatcher.Status == DeviceWatcherStatus.Started || _bleWatcher.Status == DeviceWatcherStatus.EnumerationCompleted)
-                {
-                    _bleWatcher.Stop();
-                }
-            }
-            catch { }
-        }
     }
 }
