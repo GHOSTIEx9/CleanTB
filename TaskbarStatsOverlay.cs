@@ -718,7 +718,9 @@ public class TaskbarStatsOverlay : Form
             float gpuLabelW = _gpuLabelW;
             float arrowW = _config.ShowNetArrows ? _arrowW : 0f;
             float upPrefixW = _config.ShowNetArrows ? 0f : _upPrefixW;
-            float dnPrefixW = _config.ShowNetArrows ? 0f : (_config.ShowUploadSpeed ? _dnPrefixW : 0f);
+            bool showDown = _config.ShowDownloadSpeed;
+            bool showUp = _config.ShowUploadSpeed;
+            float dnPrefixW = _config.ShowNetArrows ? 0f : (showUp ? _dnPrefixW : 0f);
 
             float labelGap = 3f * _dpiScale;
             float moduleGap = 8f * _dpiScale;
@@ -726,18 +728,7 @@ public class TaskbarStatsOverlay : Form
 
             float curX = 2f;
 
-            // --- Upload Slot ---
-            bool showUp = _config.ShowUploadSpeed;
-            float upX = curX;
-            float upPrefixActualW = _config.ShowNetArrows ? arrowW : upPrefixW;
-            float upValX = upX + upPrefixActualW;
-            if (showUp)
-            {
-                curX = upValX + speedBoxW + moduleGap;
-            }
-
-            // --- Download Slot ---
-            bool showDown = _config.ShowDownloadOnly;
+            // --- Download Slot (Primary) ---
             float downX = curX;
             float downPrefixActualW = _config.ShowNetArrows ? arrowW : dnPrefixW;
             float downValX = downX + downPrefixActualW;
@@ -746,8 +737,17 @@ public class TaskbarStatsOverlay : Form
                 curX = downValX + speedBoxW + moduleGap;
             }
 
+            // --- Upload Slot (Secondary) ---
+            float upX = curX;
+            float upPrefixActualW = _config.ShowNetArrows ? arrowW : upPrefixW;
+            float upValX = upX + upPrefixActualW;
+            if (showUp)
+            {
+                curX = upValX + speedBoxW + moduleGap;
+            }
+
             // --- Divider Line ---
-            bool hasNet = showUp || showDown;
+            bool hasNet = showDown || showUp;
             bool hasHw = _config.ShowCpu || _config.ShowRam || _config.ShowGpu;
             float divLineX = 0f;
             if (hasNet && hasHw)
@@ -821,7 +821,22 @@ public class TaskbarStatsOverlay : Form
             float rowY = Math.Max(1f, (h - _fontLineHeight) / 2f);
             float boxH = Math.Max(_fontLineHeight + 4f, 20f * _dpiScale);
 
-            // --- Upload Speed ---
+            // --- Download Speed (Primary) ---
+            if (showDown)
+            {
+                if (_config.ShowNetArrows)
+                {
+                    DrawShadowText(g, "▼", _fontBold, _brushNetDown, downX, rowY, _sf);
+                }
+                else if (showUp)
+                {
+                    DrawShadowText(g, "DN", _fontBold, _brushNetDown, downX, rowY, _sf);
+                }
+
+                DrawShadowText(g, downloadStr, _fontRegular, _brushVal, downValX, rowY, _sf);
+            }
+
+            // --- Upload Speed (Secondary) ---
             if (showUp)
             {
                 if (_config.ShowNetArrows)
@@ -833,24 +848,7 @@ public class TaskbarStatsOverlay : Form
                     DrawShadowText(g, "UP", _fontBold, _brushNetUp, upX, rowY, _sf);
                 }
 
-                var rectUp = new RectangleF(upValX, rowY, speedBoxW, boxH);
-                DrawShadowText(g, uploadStr, _fontRegular, _brushVal, rectUp, _sfRight);
-            }
-
-            // --- Download Speed ---
-            if (showDown)
-            {
-                if (_config.ShowNetArrows)
-                {
-                    DrawShadowText(g, "▼", _fontBold, _brushNetDown, downX, rowY, _sf);
-                }
-                else if (_config.ShowUploadSpeed)
-                {
-                    DrawShadowText(g, "DN", _fontBold, _brushNetDown, downX, rowY, _sf);
-                }
-
-                var rectDown = new RectangleF(downValX, rowY, speedBoxW, boxH);
-                DrawShadowText(g, downloadStr, _fontRegular, _brushVal, rectDown, _sfRight);
+                DrawShadowText(g, uploadStr, _fontRegular, _brushVal, upValX, rowY, _sf);
             }
 
             // --- Divider ---

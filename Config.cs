@@ -29,7 +29,7 @@ public class AppConfig
     // Hardware Stats Display Settings
     public bool ShowHardwareStats { get; set; } = true;
     public StatsPosition StatsPosition { get; set; } = StatsPosition.Right;
-    public bool ShowDownloadOnly { get; set; } = true;
+    public bool ShowDownloadSpeed { get; set; } = true;
     public bool ShowUploadSpeed { get; set; } = false;
     public bool ShowNetArrows { get; set; } = false;
     public bool ShowCpu { get; set; } = true;
@@ -38,6 +38,19 @@ public class AppConfig
     public bool StatsClickThrough { get; set; } = false;
     public int? StatsCustomX { get; set; } = null;
     public int? StatsCustomY { get; set; } = null;
+
+    // Backwards compatibility for legacy config.json with ShowDownloadOnly
+    public bool? ShowDownloadOnly
+    {
+        get => null;
+        set
+        {
+            if (value.HasValue)
+            {
+                ShowDownloadSpeed = true;
+            }
+        }
+    }
 
     // Peripheral Battery HUD Settings
     public bool ShowBatteryStats { get; set; } = true;

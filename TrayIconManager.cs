@@ -211,13 +211,9 @@ public class TrayIconManager : IDisposable
             UpdateMenuStates();
         });
 
-        _itemStatsDownload = new ToolStripMenuItem("Show Download Speed Only", null, (s, e) =>
+        _itemStatsDownload = new ToolStripMenuItem("Show Download Speed", null, (s, e) =>
         {
-            _config.ShowDownloadOnly = !_config.ShowDownloadOnly;
-            if (_config.ShowDownloadOnly)
-            {
-                _config.ShowUploadSpeed = false;
-            }
+            _config.ShowDownloadSpeed = !_config.ShowDownloadSpeed;
             _config.Save();
             UpdateMenuStates();
             _statsOverlay.CheckVisibilityAndRender();
@@ -226,10 +222,6 @@ public class TrayIconManager : IDisposable
         _itemStatsUpload = new ToolStripMenuItem("Show Upload Speed", null, (s, e) =>
         {
             _config.ShowUploadSpeed = !_config.ShowUploadSpeed;
-            if (_config.ShowUploadSpeed)
-            {
-                _config.ShowDownloadOnly = false;
-            }
             _config.Save();
             UpdateMenuStates();
             _statsOverlay.CheckVisibilityAndRender();
@@ -513,7 +505,7 @@ public class TrayIconManager : IDisposable
             _itemStatsPosRight.Checked = (_config.StatsPosition == StatsPosition.Right);
         }
 
-        _itemStatsDownload.Checked = _config.ShowDownloadOnly;
+        _itemStatsDownload.Checked = _config.ShowDownloadSpeed;
         _itemStatsUpload.Checked = _config.ShowUploadSpeed;
         _itemStatsNetArrows.Checked = _config.ShowNetArrows;
         _itemStatsCpu.Checked = _config.ShowCpu;

@@ -250,11 +250,29 @@ public class HardwareMonitor : IDisposable
                 {
                     if (iface.OperationalStatus == OperationalStatus.Up &&
                         iface.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
-                        iface.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
+                        iface.NetworkInterfaceType != NetworkInterfaceType.Tunnel &&
+                        !iface.Description.StartsWith("WAN Miniport", StringComparison.OrdinalIgnoreCase) &&
+                        !iface.Description.Contains("Filter", StringComparison.OrdinalIgnoreCase) &&
+                        !iface.Description.Contains("QoS", StringComparison.OrdinalIgnoreCase))
                     {
                         list.Add(iface);
                     }
                 }
+
+                // Fallback to any active non-loopback interface if strict physical filter found none
+                if (list.Count == 0)
+                {
+                    foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
+                    {
+                        if (iface.OperationalStatus == OperationalStatus.Up &&
+                            iface.NetworkInterfaceType != NetworkInterfaceType.Loopback &&
+                            iface.NetworkInterfaceType != NetworkInterfaceType.Tunnel)
+                        {
+                            list.Add(iface);
+                        }
+                    }
+                }
+
                 _cachedInterfaces = list.ToArray();
                 _lastInterfaceRefresh = DateTime.UtcNow;
             }
