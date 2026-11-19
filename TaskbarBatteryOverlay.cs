@@ -431,7 +431,7 @@ public class TaskbarBatteryOverlay : Form
                 PeripheralType.Mouse => _config.ShowBatteryMouse,
                 PeripheralType.Keyboard => _config.ShowBatteryKeyboard,
                 PeripheralType.Controller => _config.ShowBatteryController,
-                _ => true
+                _ => _config.ShowBatteryOther
             };
             if (ok) return true;
         }
@@ -686,7 +686,7 @@ public class TaskbarBatteryOverlay : Form
                         PeripheralType.Mouse => _config.ShowBatteryMouse,
                         PeripheralType.Keyboard => _config.ShowBatteryKeyboard,
                         PeripheralType.Controller => _config.ShowBatteryController,
-                        _ => true
+                        _ => _config.ShowBatteryOther
                     };
                     if (!include) continue;
 

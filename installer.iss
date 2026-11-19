@@ -12,9 +12,12 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
-DefaultDirName={autopf}\{#MyAppName}
+; Install directly to user programs folder - zero admin/UAC prompts required
+DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+DisableDirPage=yes
+DisableReadyPage=yes
 UsePreviousAppDir=no
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=commandline
@@ -46,10 +49,10 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "publish_sc\CleanTB.exe"; DestDir: "{app}"; Flags: ignoreversion restartreplace
-Source: "publish\ExplorerTAP.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
-Source: "publish\ExplorerHooks.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
-Source: "publish\config.json"; DestDir: "{app}"; Flags: ignoreversion restartreplace
-Source: "publish\app.ico"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "ExplorerTAP.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "ExplorerHooks.dll"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "config.json"; DestDir: "{app}"; Flags: ignoreversion restartreplace
+Source: "app.ico"; DestDir: "{app}"; Flags: ignoreversion restartreplace
 
 [InstallDelete]
 ; Delete any legacy or duplicate uninstallers and logs
@@ -60,6 +63,11 @@ Type: files; Name: "{app}\crash.log"
 Type: files; Name: "{app}\stderr.log"
 Type: files; Name: "{app}\stdout.log"
 
+[UninstallDelete]
+Type: files; Name: "{app}\crash.log"
+Type: files; Name: "{app}\config.json"
+Type: filesandordirs; Name: "{app}"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"; IconFilename: "{app}\app.ico"
@@ -67,6 +75,9 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{cmd}"; Parameters: "/C reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v CleanTB /f"; Flags: runhidden
 
 [Code]
 function PrepareToInstall(var NeedsRestart: Boolean): String;

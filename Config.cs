@@ -48,6 +48,7 @@ public class AppConfig
     public bool ShowBatteryMouse { get; set; } = true;
     public bool ShowBatteryKeyboard { get; set; } = true;
     public bool ShowBatteryController { get; set; } = true;
+    public bool ShowBatteryOther { get; set; } = true;
     public bool BatteryPreviewMode { get; set; } = false;
 
     private static readonly string ConfigPath = Path.Combine(

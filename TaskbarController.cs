@@ -53,6 +53,9 @@ public class TaskbarController : IDisposable
     private static extern IntPtr LoadLibrary(string lpFileName);
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool FreeLibrary(IntPtr hModule);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
     private static extern IntPtr GetProcAddress(IntPtr hModule, string lpProcName);
 
     [DllImport("kernel32.dll")]
@@ -113,7 +116,15 @@ public class TaskbarController : IDisposable
         string tapDllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ExplorerTAP.dll");
         if (!File.Exists(tapDllPath))
         {
-            throw new FileNotFoundException("ExplorerTAP.dll not found in application directory!", tapDllPath);
+            string fallbackPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CleanTB", "ExplorerTAP.dll");
+            if (File.Exists(fallbackPath))
+            {
+                tapDllPath = fallbackPath;
+            }
+            else
+            {
+                throw new FileNotFoundException("ExplorerTAP.dll not found in application directory or AppData!", tapDllPath);
+            }
         }
 
         if (_hTapModule == IntPtr.Zero)
@@ -267,6 +278,16 @@ public class TaskbarController : IDisposable
             Marshal.Release(_pServiceRaw);
             _pServiceRaw = IntPtr.Zero;
         }
+
         _service = null;
+        _injectFunc = null;
+
+        if (_hTapModule != IntPtr.Zero)
+        {
+            FreeLibrary(_hTapModule);
+            _hTapModule = IntPtr.Zero;
+        }
+
+        GC.SuppressFinalize(this);
     }
 }

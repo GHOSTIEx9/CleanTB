@@ -14,6 +14,8 @@
     <PublishSingleFile>false</PublishSingleFile>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
     <Version>1.0.1</Version>
     <AssemblyVersion>1.0.1.0</AssemblyVersion>
     <FileVersion>1.0.1.0</FileVersion>
@@ -27,6 +29,8 @@
     <Content Include="app.ico">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <EmbeddedResource Include="ExplorerTAP.dll" />
+    <EmbeddedResource Include="ExplorerHooks.dll" />
     <None Update="ExplorerTAP.dll">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Timer = System.Threading.Timer;
@@ -43,15 +44,66 @@ public class PeripheralBatteryMonitor : IDisposable
     private const byte BATTERY_DEVTYPE_GAMEPAD = 0x00;
     private const byte BATTERY_TYPE_DISCONNECTED = 0x00;
     private const byte BATTERY_TYPE_WIRED = 0x01;
-    private const byte BATTERY_TYPE_ALKALINE = 0x02;
-    private const byte BATTERY_TYPE_NIMH = 0x03;
-    private const byte BATTERY_TYPE_UNKNOWN = 0xFF;
 
     [DllImport("xinput1_4.dll", EntryPoint = "XInputGetBatteryInformation")]
     private static extern int XInputGetBatteryInformation14(int dwUserIndex, byte devType, ref XINPUT_BATTERY_INFORMATION pBatteryInformation);
 
     [DllImport("xinput9_1_0.dll", EntryPoint = "XInputGetBatteryInformation")]
     private static extern int XInputGetBatteryInformation91(int dwUserIndex, byte devType, ref XINPUT_BATTERY_INFORMATION pBatteryInformation);
+
+    // Win32 SetupAPI for reading PnP device properties (same source Windows Settings uses for DEVPKEY_Device_BatteryLifePercent)
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr SetupDiGetClassDevs(IntPtr ClassGuid, string? Enumerator, IntPtr hwndParent, uint Flags);
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern bool SetupDiEnumDeviceInfo(IntPtr DeviceInfoSet, uint MemberIndex, ref SP_DEVINFO_DATA DeviceInfoData);
+
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetupDiGetDevicePropertyW(
+        IntPtr deviceInfoSet,
+        ref SP_DEVINFO_DATA DeviceInfoData,
+        ref DEVPROPKEY propertyKey,
+        out uint propertyType,
+        byte[]? propertyBuffer,
+        uint propertyBufferSize,
+        out uint requiredSize,
+        uint flags
+    );
+
+    [DllImport("setupapi.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool SetupDiGetDeviceInstanceIdW(
+        IntPtr DeviceInfoSet,
+        ref SP_DEVINFO_DATA DeviceInfoData,
+        char[] DeviceInstanceId,
+        uint DeviceInstanceIdSize,
+        out uint RequiredSize
+    );
+
+    [DllImport("setupapi.dll", SetLastError = true)]
+    private static extern bool SetupDiDestroyDeviceInfoList(IntPtr DeviceInfoSet);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SP_DEVINFO_DATA
+    {
+        public uint cbSize;
+        public Guid ClassGuid;
+        public uint DevInst;
+        public IntPtr Reserved;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DEVPROPKEY
+    {
+        public Guid fmtid;
+        public uint pid;
+    }
+
+    private static readonly DEVPROPKEY PKEY_Device_FriendlyName = new() { fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), pid = 14 };
+    private static readonly DEVPROPKEY PKEY_Device_DeviceDesc = new() { fmtid = new Guid("a45c254e-df1c-4efd-8020-67d146a850e0"), pid = 2 };
+    private static readonly DEVPROPKEY PKEY_Device_BatteryLifePercent = new() { fmtid = new Guid("104ea319-6ee2-4701-bd47-8ddbf425bbe5"), pid = 2 };
+
+    private const uint DIGCF_PRESENT = 0x00000002;
+    private const uint DIGCF_ALLCLASSES = 0x00000004;
 
     private readonly AppConfig _config;
     private readonly System.Threading.Timer _pollTimer;
@@ -90,7 +142,6 @@ public class PeripheralBatteryMonitor : IDisposable
             string bthAqs = BluetoothDevice.GetDeviceSelectorFromPairingState(true);
             _bthWatcher = DeviceInformation.CreateWatcher(bthAqs, new[] {
                 "System.ItemNameDisplay",
-                "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2",
                 "System.Devices.Aep.IsConnected"
             });
             _bthWatcher.Added += (w, info) => ForceRefresh();
@@ -130,6 +181,8 @@ public class PeripheralBatteryMonitor : IDisposable
                     previewList.Add(new BatteryDeviceInfo("demo_kb", "Wireless Keyboard", PeripheralType.Keyboard, 82, true));
                 if (_config.ShowBatteryController)
                     previewList.Add(new BatteryDeviceInfo("demo_ctrl", "Xbox Controller", PeripheralType.Controller, 70, true));
+                if (_config.ShowBatteryOther)
+                    previewList.Add(new BatteryDeviceInfo("demo_other", "Generic Device", PeripheralType.Other, 60, true));
                 return previewList;
             }
 
@@ -179,17 +232,14 @@ public class PeripheralBatteryMonitor : IDisposable
             // 1. Query XInput Wireless Controllers (Xbox 360, One, Series, etc.)
             PollXInputControllers(found);
 
-            // 2. Query Windows Runtime Bluetooth Low Energy Devices (GATT Battery Service 0x180F)
+            // 2. Query SetupAPI PnP Devices (this is the EXACT source Windows Settings uses for DEVPKEY_Device_BatteryLifePercent)
+            // Instantly captures all Bluetooth headphones, headsets (HFP / hands-free), Bluetooth keyboards, mice, earbuds, styluses, etc.
+            PollSetupDiDevices(found);
+
+            // 3. Query Windows Runtime Bluetooth Low Energy Devices (GATT Battery Service 0x180F) for low-energy peripherals
             try
             {
                 await PollBleDevicesAsync(found);
-            }
-            catch { }
-
-            // 3. Query Windows Runtime Bluetooth Classic Devices (BTH Audio, Headsets, Mice, Keyboards)
-            try
-            {
-                await PollClassicBluetoothDevicesAsync(found);
             }
             catch { }
 
@@ -281,6 +331,89 @@ public class PeripheralBatteryMonitor : IDisposable
         }
     }
 
+    private void PollSetupDiDevices(List<BatteryDeviceInfo> list)
+    {
+        IntPtr hDevInfo = SetupDiGetClassDevs(IntPtr.Zero, null, IntPtr.Zero, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+        if (hDevInfo == IntPtr.Zero || hDevInfo.ToInt64() == -1)
+            return;
+
+        try
+        {
+            var devData = new SP_DEVINFO_DATA();
+            devData.cbSize = (uint)Marshal.SizeOf(typeof(SP_DEVINFO_DATA));
+            uint index = 0;
+
+            while (SetupDiEnumDeviceInfo(hDevInfo, index++, ref devData))
+            {
+                var batKey = PKEY_Device_BatteryLifePercent;
+                if (!SetupDiGetDevicePropertyW(hDevInfo, ref devData, ref batKey, out uint propType, null, 0, out uint reqSize, 0))
+                {
+                    if (Marshal.GetLastWin32Error() == 122 && reqSize > 0)
+                    {
+                        byte[] buf = new byte[reqSize];
+                        if (SetupDiGetDevicePropertyW(hDevInfo, ref devData, ref batKey, out propType, buf, reqSize, out reqSize, 0))
+                        {
+                            int battery = buf.Length > 0 ? (int)buf[0] : -1;
+                            if (battery < 0 || battery > 100) continue;
+
+                            string name = GetSetupDiString(hDevInfo, ref devData, PKEY_Device_FriendlyName);
+                            if (string.IsNullOrEmpty(name))
+                                name = GetSetupDiString(hDevInfo, ref devData, PKEY_Device_DeviceDesc);
+                            if (string.IsNullOrEmpty(name))
+                                name = "Wireless Device";
+
+                            string instanceId = GetSetupDiInstanceId(hDevInfo, ref devData);
+                            string cleanName = CleanDeviceName(name);
+                            var type = ClassifyDevice(cleanName);
+
+                            string mac = "";
+                            var m = Regex.Match(instanceId, @"([0-9a-fA-F]{12})");
+                            if (m.Success)
+                            {
+                                mac = m.Groups[1].Value.ToUpperInvariant();
+                            }
+
+                            // Deduplicate: check if this device is already in the list
+                            int existingIdx = list.FindIndex(d =>
+                                (!string.IsNullOrEmpty(mac) && d.Id.Contains(mac, StringComparison.OrdinalIgnoreCase)) ||
+                                string.Equals(d.Name, cleanName, StringComparison.OrdinalIgnoreCase)
+                            );
+
+                            if (existingIdx >= 0)
+                            {
+                                if (list[existingIdx].BatteryPercent < 0 && battery >= 0)
+                                {
+                                    list[existingIdx] = new BatteryDeviceInfo(
+                                        instanceId,
+                                        cleanName,
+                                        type,
+                                        battery,
+                                        true
+                                    );
+                                }
+                            }
+                            else
+                            {
+                                list.Add(new BatteryDeviceInfo(
+                                    instanceId,
+                                    cleanName,
+                                    type,
+                                    battery,
+                                    true
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+        finally
+        {
+            SetupDiDestroyDeviceInfoList(hDevInfo);
+        }
+    }
+
     private async Task PollBleDevicesAsync(List<BatteryDeviceInfo> list)
     {
         string aqs = BluetoothLEDevice.GetDeviceSelectorFromPairingState(true);
@@ -345,16 +478,45 @@ public class PeripheralBatteryMonitor : IDisposable
                                     byte level = reader.ReadByte();
                                     if (level <= 100)
                                     {
-                                        string name = string.IsNullOrWhiteSpace(ble.Name) ? devInfo.Name : ble.Name;
-                                        var type = ClassifyDevice(name);
+                                        string rawName = string.IsNullOrWhiteSpace(ble.Name) ? devInfo.Name : ble.Name;
+                                        string cleanName = CleanDeviceName(rawName);
+                                        var type = ClassifyDevice(cleanName);
 
-                                        list.Add(new BatteryDeviceInfo(
-                                            ble.DeviceId,
-                                            name,
-                                            type,
-                                            level,
-                                            true
-                                        ));
+                                        string mac = "";
+                                        var m = Regex.Match(ble.DeviceId, @"([0-9a-fA-F]{12})");
+                                        if (m.Success)
+                                        {
+                                            mac = m.Groups[1].Value.ToUpperInvariant();
+                                        }
+
+                                        int existingIdx = list.FindIndex(d =>
+                                            (!string.IsNullOrEmpty(mac) && d.Id.Contains(mac, StringComparison.OrdinalIgnoreCase)) ||
+                                            string.Equals(d.Name, cleanName, StringComparison.OrdinalIgnoreCase)
+                                        );
+
+                                        if (existingIdx >= 0)
+                                        {
+                                            if (list[existingIdx].BatteryPercent < 0 && level >= 0)
+                                            {
+                                                list[existingIdx] = new BatteryDeviceInfo(
+                                                    ble.DeviceId,
+                                                    cleanName,
+                                                    type,
+                                                    level,
+                                                    true
+                                                );
+                                            }
+                                        }
+                                        else
+                                        {
+                                            list.Add(new BatteryDeviceInfo(
+                                                ble.DeviceId,
+                                                cleanName,
+                                                type,
+                                                level,
+                                                true
+                                            ));
+                                        }
                                         break; // Captured battery for this device
                                     }
                                 }
@@ -367,91 +529,37 @@ public class PeripheralBatteryMonitor : IDisposable
         }
     }
 
-    private async Task PollClassicBluetoothDevicesAsync(List<BatteryDeviceInfo> list)
+    private static string GetSetupDiString(IntPtr hDevInfo, ref SP_DEVINFO_DATA devData, DEVPROPKEY key)
     {
-        string aqs = BluetoothDevice.GetDeviceSelectorFromPairingState(true);
-        var devicesOp = DeviceInformation.FindAllAsync(aqs, new[] {
-            "System.ItemNameDisplay",
-            "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2",
-            "System.Devices.Aep.IsConnected"
-        });
-        var devices = await RunWithTimeout(devicesOp, 2000);
-        if (devices == null) return;
-
-        foreach (var devInfo in devices)
+        if (!SetupDiGetDevicePropertyW(hDevInfo, ref devData, ref key, out uint propType, null, 0, out uint reqSize, 0))
         {
-            try
+            if (Marshal.GetLastWin32Error() == 122 && reqSize > 0)
             {
-                var bthOp = BluetoothDevice.FromIdAsync(devInfo.Id);
-                using var bth = await RunWithTimeout(bthOp, 1500);
-                if (bth == null) continue;
-
-                bool isConnected = (bth.ConnectionStatus == BluetoothConnectionStatus.Connected);
-                if (!isConnected && devInfo.Properties.TryGetValue("System.Devices.Aep.IsConnected", out var connVal) && connVal is bool bConn)
+                byte[] buf = new byte[reqSize];
+                if (SetupDiGetDevicePropertyW(hDevInfo, ref devData, ref key, out propType, buf, reqSize, out reqSize, 0))
                 {
-                    isConnected = bConn;
-                }
-
-                // CRITICAL: If the device is not connected right now, ignore it!
-                if (!isConnected)
-                {
-                    continue;
-                }
-
-                string name = string.IsNullOrWhiteSpace(bth.Name) ? devInfo.Name : bth.Name;
-                var type = ClassifyDevice(name);
-
-                // If classified as Other, check Bluetooth ClassOfDevice
-                if (type == PeripheralType.Other)
-                {
-                    if (bth.ClassOfDevice.MajorClass == BluetoothMajorClass.AudioVideo)
-                    {
-                        type = PeripheralType.Headphones;
-                    }
-                    else if (bth.ClassOfDevice.MajorClass == BluetoothMajorClass.Peripheral)
-                    {
-                        uint minor = (uint)bth.ClassOfDevice.MinorClass;
-                        if ((minor & 0x80) != 0) type = PeripheralType.Mouse;
-                        else if ((minor & 0x40) != 0) type = PeripheralType.Keyboard;
-                    }
-                }
-
-                int batteryPercent = -1;
-                if (devInfo.Properties.TryGetValue("{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2", out var batVal) && batVal != null)
-                {
-                    if (batVal is byte b) batteryPercent = b;
-                    else if (batVal is int i) batteryPercent = i;
-                    else if (batVal is uint u) batteryPercent = (int)u;
-                }
-
-                // Avoid duplicate if already reported by BLE
-                int existingIdx = list.FindIndex(x => x.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-                if (existingIdx >= 0)
-                {
-                    if (batteryPercent >= 0 && list[existingIdx].BatteryPercent < 0)
-                    {
-                        list[existingIdx] = new BatteryDeviceInfo(
-                            bth.DeviceId,
-                            name,
-                            type,
-                            batteryPercent,
-                            true
-                        );
-                    }
-                }
-                else
-                {
-                    list.Add(new BatteryDeviceInfo(
-                        bth.DeviceId,
-                        name,
-                        type,
-                        batteryPercent,
-                        true
-                    ));
+                    return System.Text.Encoding.Unicode.GetString(buf).TrimEnd('\0');
                 }
             }
-            catch { }
         }
+        return string.Empty;
+    }
+
+    private static string GetSetupDiInstanceId(IntPtr hDevInfo, ref SP_DEVINFO_DATA devData)
+    {
+        char[] buf = new char[512];
+        if (SetupDiGetDeviceInstanceIdW(hDevInfo, ref devData, buf, (uint)buf.Length, out uint reqSize) && reqSize > 1)
+        {
+            return new string(buf, 0, (int)reqSize - 1);
+        }
+        return string.Empty;
+    }
+
+    public static string CleanDeviceName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "Wireless Device";
+        string clean = Regex.Replace(name, @"\s+(Hands-Free\s*AG|Hands-Free|Avrcp\s*Transport|Audio)$", "", RegexOptions.IgnoreCase).Trim();
+        return string.IsNullOrWhiteSpace(clean) ? "Wireless Device" : clean;
     }
 
     public static PeripheralType ClassifyDevice(string name)
@@ -483,7 +591,7 @@ public class PeripheralBatteryMonitor : IDisposable
             lower.Contains("filco") || lower.Contains("k70") || lower.Contains("k65") ||
             lower.Contains("k100") || lower.Contains("deathstalker") || lower.Contains("anne pro") ||
             lower.Contains("rk61") || lower.Contains("rk84") || lower.Contains("nuphy") ||
-            lower.Contains("epomaker"))
+            lower.Contains("epomaker") || lower.Contains("keypad"))
         {
             return PeripheralType.Keyboard;
         }
@@ -500,7 +608,8 @@ public class PeripheralBatteryMonitor : IDisposable
             lower.Contains("sennheiser") || lower.Contains("beats") || lower.Contains("hyperx") ||
             lower.Contains("cloud") || lower.Contains("kraken") || lower.Contains("blackshark") ||
             lower.Contains("barracuda") || lower.Contains("virtuoso") || lower.Contains("void") ||
-            lower.Contains("hs70") || lower.Contains("hs80") || lower.Contains("quantum"))
+            lower.Contains("hs70") || lower.Contains("hs80") || lower.Contains("quantum") ||
+            lower.Contains("wh-") || lower.Contains("wf-"))
         {
             return PeripheralType.Headphones;
         }

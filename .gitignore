@@ -17,9 +17,17 @@ Output/
 ## Runtime config and logs
 config.json
 crash.log
-/CleanTB-Setup.exe
 
-## Ensure required native DLLs and installer are tracked
+## Built release artifacts in root (ignore local binaries, track installer)
+/CleanTB.exe
+/CleanTB-Setup.exe
+/CleanTB-Portable.zip
+*.msix
+*.pfx
+msix_staging/
+sdk_tools/
+msix_sdk/
+
+## Ensure required native DLLs are tracked
 !ExplorerTAP.dll
 !ExplorerHooks.dll
-!installer/CleanTB-Setup.exe

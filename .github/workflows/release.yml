@@ -1,4 +1,4 @@
-name: Build & Release CleanTB Installer
+name: Build & Release CleanTB
 
 on:
   push:
@@ -22,9 +22,9 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Publish .NET Application
+      - name: Publish Self-Contained Standalone Application
         run: |
-          dotnet publish CleanTB.csproj -c Release -r win-x64 --self-contained false -o publish
+          dotnet publish CleanTB.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish_sc
 
       - name: Setup Inno Setup
         run: |
@@ -38,9 +38,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: Output/CleanTB-Setup.exe
+          files: |
+            publish_sc/CleanTB.exe
+            CleanTB-Setup.exe
           name: CleanTB ${{ github.ref_name }}
           draft: false
           prerelease: false
           generate_release_notes: true
-

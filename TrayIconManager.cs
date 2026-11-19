@@ -53,6 +53,7 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _itemBatteryMouse = null!;
     private ToolStripMenuItem _itemBatteryKeyboard = null!;
     private ToolStripMenuItem _itemBatteryController = null!;
+    private ToolStripMenuItem _itemBatteryOther = null!;
     private ToolStripMenuItem _itemBatteryPreview = null!;
     private ToolStripMenuItem _itemBatteryResetPos = null!;
 
@@ -336,6 +337,14 @@ public class TrayIconManager : IDisposable
             _batteryOverlay.CheckVisibilityAndRender();
         });
 
+        _itemBatteryOther = new ToolStripMenuItem("Other Wireless Devices", null, (s, e) =>
+        {
+            _config.ShowBatteryOther = !_config.ShowBatteryOther;
+            _config.Save();
+            UpdateMenuStates();
+            _batteryOverlay.CheckVisibilityAndRender();
+        });
+
         _itemBatteryPreview = new ToolStripMenuItem("Preview / Demo Devices", null, (s, e) =>
         {
             _config.BatteryPreviewMode = !_config.BatteryPreviewMode;
@@ -361,6 +370,7 @@ public class TrayIconManager : IDisposable
             _itemBatteryMouse,
             _itemBatteryKeyboard,
             _itemBatteryController,
+            _itemBatteryOther,
             new ToolStripSeparator(),
             _itemBatteryPreview,
             new ToolStripSeparator(),
@@ -483,6 +493,7 @@ public class TrayIconManager : IDisposable
         _itemBatteryMouse.Enabled = _config.ShowBatteryStats;
         _itemBatteryKeyboard.Enabled = _config.ShowBatteryStats;
         _itemBatteryController.Enabled = _config.ShowBatteryStats;
+        _itemBatteryOther.Enabled = _config.ShowBatteryStats;
         _itemBatteryPreview.Enabled = _config.ShowBatteryStats;
 
         bool isCustomBattery = _config.BatteryCustomX.HasValue && _config.BatteryCustomY.HasValue;
@@ -503,6 +514,7 @@ public class TrayIconManager : IDisposable
         _itemBatteryMouse.Checked = _config.ShowBatteryMouse;
         _itemBatteryKeyboard.Checked = _config.ShowBatteryKeyboard;
         _itemBatteryController.Checked = _config.ShowBatteryController;
+        _itemBatteryOther.Checked = _config.ShowBatteryOther;
         _itemBatteryPreview.Checked = _config.BatteryPreviewMode;
 
         _itemHideBorder.Checked = _config.HideBorder;
