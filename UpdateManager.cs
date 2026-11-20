@@ -22,7 +22,7 @@ public static class UpdateManager
         get
         {
             var ver = Assembly.GetExecutingAssembly().GetName().Version;
-            return ver != null ? new Version(ver.Major, ver.Minor, Math.Max(0, ver.Build)) : new Version(1, 0, 1);
+            return ver != null ? new Version(ver.Major, ver.Minor, Math.Max(0, ver.Build)) : new Version(1, 0, 2);
         }
     }
 
@@ -316,8 +316,8 @@ public static class UpdateManager
 
                 await Task.Delay(400);
 
-                // Seamless handoff: PowerShell script waits for current process to exit, overwrites the exe, and starts the new one
-                ExecuteHandoffAndRestart(tempFile, Application.ExecutablePath);
+                // Seamless handoff: PowerShell script terminates old instance, overwrites the exe, and starts the new one
+                ExecuteHandoffAndRestart(tempFile, Application.ExecutablePath, form);
             }
             catch (OperationCanceledException)
             {
@@ -341,34 +341,56 @@ public static class UpdateManager
         form.ShowDialog();
     }
 
-    private static void ExecuteHandoffAndRestart(string newExePath, string currentExePath)
+    private static void ExecuteHandoffAndRestart(string newExePath, string currentExePath, Form? form)
     {
         try
         {
-            // PowerShell command: retries Move-Item up to 15 times (every 300ms) until old process releases file handle, then starts new exe
-            string psScript = $"$dest = '{currentExePath.Replace("'", "''")}'; " +
-                              $"$src = '{newExePath.Replace("'", "''")}'; " +
-                              "for ($i=0; $i -lt 15; $i++) { " +
-                              "  try { " +
-                              "    Move-Item -Path $src -Destination $dest -Force -ErrorAction Stop; " +
-                              "    Start-Process -FilePath $dest; " +
-                              "    break; " +
-                              "  } catch { " +
-                              "    Start-Sleep -Milliseconds 300; " +
-                              "  } " +
-                              "}";
+            int currentPid = Environment.ProcessId;
+            string targetExePath = Environment.ProcessPath ?? currentExePath;
+
+            // Robust handoff script in PowerShell:
+            // 1. Force-stops current process ID so Windows immediately frees the file lock on CleanTB.exe
+            // 2. Retries copying newExePath over targetExePath up to 30 times (every 200ms = 6s total)
+            // 3. Starts the updated CleanTB.exe
+            // 4. Cleans up the temporary update file
+            string psScript = 
+                $"$targetPid = {currentPid}; " +
+                $"$dest = '{targetExePath.Replace("'", "''")}'; " +
+                $"$src = '{newExePath.Replace("'", "''")}'; " +
+                "try { Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue } catch {} " +
+                "for ($i=0; $i -lt 30; $i++) { " +
+                "  try { " +
+                "    Copy-Item -Path $src -Destination $dest -Force -ErrorAction Stop; " +
+                "    Remove-Item -Path $src -Force -ErrorAction SilentlyContinue; " +
+                "    $workDir = Split-Path -Path $dest; " +
+                "    Start-Process -FilePath $dest -WorkingDirectory $workDir; " +
+                "    exit 0; " +
+                "  } catch { " +
+                "    Start-Sleep -Milliseconds 200; " +
+                "  } " +
+                "}";
+
+            string encodedScript = Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(psScript));
 
             var startInfo = new ProcessStartInfo
             {
                 FileName = "powershell.exe",
-                Arguments = $"-NoProfile -WindowStyle Hidden -Command \"{psScript}\"",
+                Arguments = $"-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand {encodedScript}",
                 CreateNoWindow = true,
                 UseShellExecute = false,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
 
             Process.Start(startInfo);
-            Application.Exit();
+
+            try
+            {
+                form?.Hide();
+                form?.Close();
+            }
+            catch { }
+
+            Environment.Exit(0);
         }
         catch (Exception ex)
         {
