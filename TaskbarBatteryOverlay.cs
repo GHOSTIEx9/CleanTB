@@ -147,9 +147,10 @@ public class TaskbarBatteryOverlay : Form
     [DllImport("dwmapi.dll", PreserveSig = true)]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
 
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsZoomed(IntPtr hWnd);
+    [DllImport("user32.dll", ExactSpelling = true)]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+    private const uint GA_ROOT = 2;
 
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
     private static extern int GetClassName(IntPtr hWnd, StringBuilder lpClassName, int nMaxCount);
@@ -210,6 +211,7 @@ public class TaskbarBatteryOverlay : Form
     };
 
     private bool _isHiddenByFullscreen;
+    private readonly System.Windows.Forms.Timer _fullscreenCheckTimer;
 
     public TaskbarBatteryOverlay(AppConfig config, PeripheralBatteryMonitor batteryMonitor, ContextMenuStrip contextMenu)
     {
@@ -250,6 +252,22 @@ public class TaskbarBatteryOverlay : Form
             0,
             WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS
         );
+
+        // Fast periodic poll (200ms) to instantly detect fullscreen changes (like YouTube 'F' / video players)
+        // that do not switch the foreground process
+        _fullscreenCheckTimer = new System.Windows.Forms.Timer { Interval = 200 };
+        _fullscreenCheckTimer.Tick += (s, e) =>
+        {
+            if (IsHandleCreated && !IsDisposed)
+            {
+                bool isFs = IsFullscreenWindowActive();
+                if (isFs != _isHiddenByFullscreen)
+                {
+                    CheckVisibilityAndRender();
+                }
+            }
+        };
+        _fullscreenCheckTimer.Start();
 
         _batteryMonitor.BatteryUpdated += devices =>
         {
@@ -460,7 +478,7 @@ public class TaskbarBatteryOverlay : Form
 
         try
         {
-            if (HasActiveBatteryDevices() && !_isHiddenByFullscreen)
+            if (HasActiveBatteryDevices() && !_isHiddenByFullscreen && !IsFullscreenWindowActive())
             {
                 SetWindowPos(Handle, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
                 ApplyDwmAttributes();
@@ -601,9 +619,6 @@ public class TaskbarBatteryOverlay : Form
             IntPtr hWorkerW = FindWindow("WorkerW", null);
             if (hForeground == hProgman || hForeground == hWorkerW) return false;
 
-            // Maximized windows respect the work area and do not cover the taskbar
-            if (IsZoomed(hForeground)) return false;
-
             // Exclude taskbar flyouts, thumbnail previews, and shell popups
             StringBuilder sb = new StringBuilder(64);
             if (GetClassName(hForeground, sb, sb.Capacity) > 0)
@@ -630,14 +645,31 @@ public class TaskbarBatteryOverlay : Form
             MONITORINFO mi = new() { cbSize = Marshal.SizeOf<MONITORINFO>() };
             if (!GetMonitorInfo(hMonFg, ref mi)) return false;
 
+            // Check if foreground window covers the entire monitor rect (allowing 1px margin for DPI rounding)
             if (GetWindowRect(hForeground, out RECT rcFg))
             {
-                if (rcFg.Left <= mi.rcMonitor.Left &&
-                    rcFg.Top <= mi.rcMonitor.Top &&
-                    rcFg.Right >= mi.rcMonitor.Right &&
-                    rcFg.Bottom >= mi.rcMonitor.Bottom)
+                if (rcFg.Left <= mi.rcMonitor.Left + 1 &&
+                    rcFg.Top <= mi.rcMonitor.Top + 1 &&
+                    rcFg.Right >= mi.rcMonitor.Right - 1 &&
+                    rcFg.Bottom >= mi.rcMonitor.Bottom - 1)
                 {
                     return true;
+                }
+            }
+
+            // Check root window if foreground is a child/hosted player element
+            IntPtr hRoot = GetAncestor(hForeground, GA_ROOT);
+            if (hRoot != IntPtr.Zero && hRoot != hForeground)
+            {
+                if (GetWindowRect(hRoot, out RECT rcRoot))
+                {
+                    if (rcRoot.Left <= mi.rcMonitor.Left + 1 &&
+                        rcRoot.Top <= mi.rcMonitor.Top + 1 &&
+                        rcRoot.Right >= mi.rcMonitor.Right - 1 &&
+                        rcRoot.Bottom >= mi.rcMonitor.Bottom - 1)
+                    {
+                        return true;
+                    }
                 }
             }
         }
@@ -773,7 +805,7 @@ public class TaskbarBatteryOverlay : Form
 
     public void RenderLayeredWindow()
     {
-        if (!IsHandleCreated || IsDisposed) return;
+        if (!IsHandleCreated || IsDisposed || _isHiddenByFullscreen) return;
 
         try
         {
@@ -948,6 +980,9 @@ public class TaskbarBatteryOverlay : Form
     {
         if (disposing)
         {
+            _fullscreenCheckTimer.Stop();
+            _fullscreenCheckTimer.Dispose();
+
             if (_hWinEventHook != IntPtr.Zero)
             {
                 UnhookWinEvent(_hWinEventHook);
