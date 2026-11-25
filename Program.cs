@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
@@ -7,10 +8,131 @@ namespace CleanTB;
 
 static class Program
 {
+    private const string SingleInstanceMutexName = "CleanTB_SingleInstanceMutex_7B8A9C";
     private static Mutex? _singleInstanceMutex;
 
-    [STAThread]
-    static void Main()
+    // Intentionally omit [STAThread] on Main so EnsureDesktopStation() can bind WinSta0\Default
+    // BEFORE OleMainThreadWndClass is created by STA COM initialization.
+    static void Main(string[] args)
+    {
+        try
+        {
+            TaskbarController.EnsureDesktopStation();
+
+            if (TryParseTapWorkerArgs(args, out int parentPid, out string pipeName))
+            {
+                EnsureEmbeddedDependencies();
+                TaskbarController.RunWorkerHost(parentPid, pipeName);
+                return;
+            }
+
+            WaitForPreviousInstanceIfRequested(args);
+
+            // Check single-instance BEFORE prompting UAC so double-clicking while running doesn't trigger UAC
+            if (IsAnotherInstanceRunning())
+            {
+                MessageBox.Show(
+                    "CleanTB is already running in your system tray.",
+                    "CleanTB",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information
+                );
+                return;
+            }
+
+            // Always request Administrator permissions on startup by default so CPU & RAM temperature toggles
+            // can be enabled instantly from the tray menu without restarting CleanTB.
+            // Temperature engines stay completely off/unloaded until enabled by the user, and taskbar styling
+            // delegates cleanly to a lightweight Medium-IL --tap-worker subprocess.
+            if (!ThermalMonitor.IsRunningAsAdministrator() &&
+                !HasArg(args, "--no-elevate") &&
+                !HasArg(args, "--elevate-attempted"))
+            {
+                if (TryLaunchElevatedInstance())
+                {
+                    return;
+                }
+            }
+
+            var uiThread = new Thread(RunGuiApplication)
+            {
+                IsBackground = false
+            };
+            uiThread.SetApartmentState(ApartmentState.STA);
+            uiThread.Start();
+            uiThread.Join();
+        }
+        catch (Exception ex)
+        {
+            try
+            {
+                File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), ex.ToString());
+            }
+            catch { }
+        }
+    }
+
+    private static bool IsAnotherInstanceRunning()
+    {
+        try
+        {
+            if (Mutex.TryOpenExisting(SingleInstanceMutexName, out Mutex? existing))
+            {
+                existing.Dispose();
+                return true;
+            }
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Owned by an elevated instance
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool HasArg(string[] args, string flag)
+    {
+        foreach (string a in args)
+        {
+            if (string.Equals(a, flag, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    private static bool TryLaunchElevatedInstance()
+    {
+        try
+        {
+            string? exePath = Environment.ProcessPath;
+            if (string.IsNullOrEmpty(exePath)) return false;
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = exePath,
+                Arguments = $"--wait-pid {Environment.ProcessId} --elevate-attempted",
+                UseShellExecute = true,
+                Verb = "runas",
+                WorkingDirectory = AppDomain.CurrentDomain.BaseDirectory
+            };
+            Process.Start(startInfo);
+            return true;
+        }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // User declined UAC prompt; fall back gracefully to standard user mode
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static void RunGuiApplication()
     {
         try
         {
@@ -37,8 +159,15 @@ static class Program
             // Auto-extract embedded native dependencies if missing (enables 100% standalone single-file execution)
             EnsureEmbeddedDependencies();
 
-            const string mutexName = "CleanTB_SingleInstanceMutex_7B8A9C";
-            _singleInstanceMutex = new Mutex(true, mutexName, out bool isOnlyInstance);
+            bool isOnlyInstance;
+            try
+            {
+                _singleInstanceMutex = new Mutex(true, SingleInstanceMutexName, out isOnlyInstance);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                isOnlyInstance = false;
+            }
 
             if (!isOnlyInstance)
             {
@@ -58,7 +187,8 @@ static class Program
             // Run message pump for headless system tray app
             Application.Run(new ApplicationContext());
 
-            _singleInstanceMutex.ReleaseMutex();
+            try { _singleInstanceMutex?.ReleaseMutex(); } catch { }
+            _singleInstanceMutex?.Dispose();
         }
         catch (Exception ex)
         {
@@ -67,6 +197,47 @@ static class Program
                 File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "crash.log"), ex.ToString());
             }
             catch { }
+        }
+    }
+
+    private static bool TryParseTapWorkerArgs(string[] args, out int parentPid, out string pipeName)
+    {
+        parentPid = 0;
+        pipeName = string.Empty;
+        for (int i = 0; i < args.Length - 2; i++)
+        {
+            if (string.Equals(args[i], "--tap-worker", StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(args[i + 1], out parentPid) &&
+                parentPid > 0 &&
+                !string.IsNullOrWhiteSpace(args[i + 2]))
+            {
+                pipeName = args[i + 2];
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static void WaitForPreviousInstanceIfRequested(string[] args)
+    {
+        for (int i = 0; i < args.Length - 1; i++)
+        {
+            if (string.Equals(args[i], "--wait-pid", StringComparison.OrdinalIgnoreCase) &&
+                int.TryParse(args[i + 1], out int oldPid) &&
+                oldPid > 0 &&
+                oldPid != Environment.ProcessId)
+            {
+                try
+                {
+                    using var proc = Process.GetProcessById(oldPid);
+                    proc.WaitForExit(5000);
+                }
+                catch
+                {
+                    // Already exited or not accessible
+                }
+                break;
+            }
         }
     }
 

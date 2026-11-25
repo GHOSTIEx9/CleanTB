@@ -22,7 +22,7 @@ public static class UpdateManager
         get
         {
             var ver = Assembly.GetExecutingAssembly().GetName().Version;
-            return ver != null ? new Version(ver.Major, ver.Minor, Math.Max(0, ver.Build)) : new Version(1, 0, 2);
+            return ver != null ? new Version(ver.Major, ver.Minor, Math.Max(0, ver.Build)) : new Version(1, 0, 3);
         }
     }
 
@@ -358,8 +358,10 @@ public static class UpdateManager
                 $"$dest = '{targetExePath.Replace("'", "''")}'; " +
                 $"$src = '{newExePath.Replace("'", "''")}'; " +
                 "try { Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue } catch {} " +
+                "Start-Sleep -Milliseconds 150; " +
                 "for ($i=0; $i -lt 30; $i++) { " +
                 "  try { " +
+                "    if ($i -ge 2) { Get-Process -Name 'CleanTB' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } " +
                 "    Copy-Item -Path $src -Destination $dest -Force -ErrorAction Stop; " +
                 "    Remove-Item -Path $src -Force -ErrorAction SilentlyContinue; " +
                 "    $workDir = Split-Path -Path $dest; " +

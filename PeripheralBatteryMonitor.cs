@@ -156,6 +156,7 @@ public class PeripheralBatteryMonitor : IDisposable
     private readonly AppConfig _config;
     private readonly Timer _pollTimer;
     private readonly Timer _debounceTimer;
+    private readonly DongleBatteryMonitor _dongleMonitor = new();
     private readonly object _lock = new();
     private List<BatteryDeviceInfo> _devices = new();
     private bool _isDisposed;
@@ -210,7 +211,8 @@ public class PeripheralBatteryMonitor : IDisposable
         if (_isDisposed) return;
         try
         {
-            // Debounce for 200ms to allow Bluetooth connection/disconnection handshake to settle
+            _dongleMonitor.InvalidateCache();
+            // Debounce for 200ms to allow Bluetooth/USB connection/disconnection handshake to settle
             _debounceTimer.Change(200, Timeout.Infinite);
         }
         catch { }
@@ -239,6 +241,9 @@ public class PeripheralBatteryMonitor : IDisposable
             // Instantly captures all Bluetooth headphones, headsets (HFP / hands-free), Bluetooth keyboards, mice, earbuds, styluses, etc.
             PollSetupDiDevices(found);
 
+            // 3. Query 2.4 GHz USB Dongles & HID Wireless Receivers (Logitech HID++, Razer HyperSpeed, Sony DualSense/DS4, SteelSeries, Corsair, HyperX, HID 0x85)
+            PollDongleDevices(found);
+
             bool changed;
             lock (_lock)
             {
@@ -255,6 +260,44 @@ public class PeripheralBatteryMonitor : IDisposable
         finally
         {
             Interlocked.Exchange(ref _pollingActive, 0);
+        }
+    }
+
+    private void PollDongleDevices(List<BatteryDeviceInfo> list)
+    {
+        foreach (var dongleDev in _dongleMonitor.PollHidDongles())
+        {
+            int existingIdx = list.FindIndex(d =>
+                string.Equals(d.Id, dongleDev.Id, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(d.Name, dongleDev.Name, StringComparison.OrdinalIgnoreCase) ||
+                (dongleDev.Type == PeripheralType.Controller && d.Type == PeripheralType.Controller &&
+                 ((dongleDev.Name.Contains("DualSense", StringComparison.OrdinalIgnoreCase) && d.Name.Contains("DualSense", StringComparison.OrdinalIgnoreCase)) ||
+                  (dongleDev.Name.Contains("DualShock", StringComparison.OrdinalIgnoreCase) && d.Name.Contains("DualShock", StringComparison.OrdinalIgnoreCase)))));
+
+            // Replace dummy 100% wired XInput fallback when GameSir / FlyDigi / BEITONG HID gives true wireless %
+            if (existingIdx < 0 && dongleDev.Type == PeripheralType.Controller &&
+                (dongleDev.Id.StartsWith("GAMESIR_", StringComparison.OrdinalIgnoreCase) ||
+                 dongleDev.Id.StartsWith("FLYDIGI_", StringComparison.OrdinalIgnoreCase) ||
+                 dongleDev.Id.StartsWith("BEKEN_", StringComparison.OrdinalIgnoreCase) ||
+                 dongleDev.Id.StartsWith("BEITONG_", StringComparison.OrdinalIgnoreCase)))
+            {
+                int xinputCount = list.Count(d => d.Id.StartsWith("xinput_", StringComparison.OrdinalIgnoreCase));
+                if (xinputCount == 1)
+                    existingIdx = list.FindIndex(d => d.Id.StartsWith("xinput_", StringComparison.OrdinalIgnoreCase));
+            }
+
+            if (existingIdx >= 0)
+            {
+                if (list[existingIdx].BatteryPercent <= 0 ||
+                    list[existingIdx].Id.StartsWith("xinput_", StringComparison.OrdinalIgnoreCase))
+                {
+                    list[existingIdx] = dongleDev;
+                }
+            }
+            else
+            {
+                list.Add(dongleDev);
+            }
         }
     }
 
@@ -527,7 +570,14 @@ public class PeripheralBatteryMonitor : IDisposable
             lower.Contains("pulsar") || lower.Contains("aerox") || lower.Contains("scimitar") ||
             lower.Contains("gladius") || lower.Contains("orochi") || lower.Contains("katar") ||
             lower.Contains("harpoon") || lower.Contains("dark core") || lower.Contains("ironclaw") ||
-            lower.Contains("mamba") || lower.Contains("rival") || lower.Contains("prime"))
+            lower.Contains("mamba") || lower.Contains("rival") || lower.Contains("prime") ||
+            lower.Contains("naga") || lower.Contains("cobra") || lower.Contains("pro click") ||
+            lower.Contains("gladius") || lower.Contains("harpe") || lower.Contains("keris") ||
+            lower.Contains("chakram") || lower.Contains("spatha") || lower.Contains("pugio") ||
+            lower.Contains("lamzu") || lower.Contains("vaxee") || lower.Contains("finalmouse") ||
+            lower.Contains("ultralightx") || lower.Contains("dareu") || lower.Contains("ajazz") ||
+            lower.Contains("mchose") || lower.Contains("inphic") || lower.Contains("hitscan") ||
+            lower.Contains("rapoo") || lower.Contains("attack shark"))
         {
             return PeripheralType.Mouse;
         }
@@ -540,7 +590,9 @@ public class PeripheralBatteryMonitor : IDisposable
             lower.Contains("filco") || lower.Contains("k70") || lower.Contains("k65") ||
             lower.Contains("k100") || lower.Contains("deathstalker") || lower.Contains("anne pro") ||
             lower.Contains("rk61") || lower.Contains("rk84") || lower.Contains("nuphy") ||
-            lower.Contains("epomaker") || lower.Contains("keypad"))
+            lower.Contains("epomaker") || lower.Contains("keypad") ||
+            lower.Contains("azoth") || lower.Contains("falchion") || lower.Contains("scope ii") ||
+            lower.Contains("morph 96") || lower.Contains("aula"))
         {
             return PeripheralType.Keyboard;
         }
@@ -549,7 +601,7 @@ public class PeripheralBatteryMonitor : IDisposable
         if (lower.Contains("headset") || lower.Contains("headphone") || lower.Contains("earphone") ||
             lower.Contains("buds") || lower.Contains("airpod") || lower.Contains("wh-1000") ||
             lower.Contains("wf-1000") || lower.Contains("soundcore") || lower.Contains("g435") ||
-            lower.Contains("arctis") || lower.Contains("audio") || lower.Contains("speaker") ||
+            lower.Contains("arctis") || lower.Contains("nova") || lower.Contains("audio") || lower.Contains("speaker") ||
             lower.Contains("soundbar") || lower.Contains("freebuds") || lower.Contains("shokz") ||
             lower.Contains("airopes") || lower.Contains("airdopes") || lower.Contains("luna") ||
             lower.Contains("astra") || lower.Contains("earbuds") || lower.Contains("qc35") ||
@@ -558,7 +610,13 @@ public class PeripheralBatteryMonitor : IDisposable
             lower.Contains("cloud") || lower.Contains("kraken") || lower.Contains("blackshark") ||
             lower.Contains("barracuda") || lower.Contains("virtuoso") || lower.Contains("void") ||
             lower.Contains("hs70") || lower.Contains("hs80") || lower.Contains("quantum") ||
-            lower.Contains("wh-") || lower.Contains("wf-"))
+            lower.Contains("wh-") || lower.Contains("wf-") ||
+            lower.Contains("stealth") || lower.Contains("atlas air") || lower.Contains("strix go") ||
+            lower.Contains("cetra") || lower.Contains("delta ii") || lower.Contains("epos") ||
+            lower.Contains("h3pro") || lower.Contains("maxwell") || lower.Contains("audeze") ||
+            lower.Contains("inzone") || lower.Contains("plyr") || lower.Contains("astro a50") ||
+            lower.Contains("g pro x") || lower.Contains("g533") || lower.Contains("g535") ||
+            lower.Contains("g633") || lower.Contains("g733") || lower.Contains("g933"))
         {
             return PeripheralType.Headphones;
         }
@@ -568,7 +626,8 @@ public class PeripheralBatteryMonitor : IDisposable
             lower.Contains("dualsense") || lower.Contains("dualshock") || lower.Contains("joy-con") ||
             lower.Contains("switch pro") || lower.Contains("stadia") || lower.Contains("flydigi") ||
             lower.Contains("gamesir") || lower.Contains("8bitdo") || lower.Contains("gulikit") ||
-            lower.Contains("wolverine") || lower.Contains("scuf"))
+            lower.Contains("wolverine") || lower.Contains("scuf") || lower.Contains("beitong") ||
+            lower.Contains("kp40") || lower.Contains("vader"))
         {
             return PeripheralType.Controller;
         }
@@ -581,5 +640,6 @@ public class PeripheralBatteryMonitor : IDisposable
         _isDisposed = true;
         _pollTimer.Dispose();
         _debounceTimer.Dispose();
+        _dongleMonitor.Dispose();
     }
 }

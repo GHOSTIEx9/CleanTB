@@ -35,9 +35,20 @@ public class AppConfig
     public bool ShowCpu { get; set; } = true;
     public bool ShowRam { get; set; } = true;
     public bool ShowGpu { get; set; } = true;
+    public bool ShowCpuTemp { get; set; } = false;
+    public bool ShowRamTemp { get; set; } = false;
+    public bool ShowGpuTemp { get; set; } = false;
+    public bool UseFahrenheit { get; set; } = false;
+    public bool ThermalWarningAccents { get; set; } = true;
     public bool StatsClickThrough { get; set; } = false;
     public int? StatsCustomX { get; set; } = null;
     public int? StatsCustomY { get; set; } = null;
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool NeedsElevationForTemps => ShowHardwareStats && ((ShowCpu && ShowCpuTemp) || (ShowRam && ShowRamTemp));
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool AnyTempEnabled => ShowHardwareStats && ((ShowCpu && ShowCpuTemp) || (ShowRam && ShowRamTemp) || (ShowGpu && ShowGpuTemp));
 
     // Backwards compatibility for legacy config.json with ShowDownloadOnly
     public bool? ShowDownloadOnly

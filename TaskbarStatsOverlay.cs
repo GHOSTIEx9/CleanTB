@@ -208,6 +208,7 @@ public class TaskbarStatsOverlay : Form
     // Precomputed slot dimensions (Calculated dynamically per DPI scale)
     private float _speedBoxW;
     private float _percentBoxW;
+    private float _tempBoxW;
     private float _cpuLabelW;
     private float _ramLabelW;
     private float _gpuLabelW;
@@ -224,6 +225,9 @@ public class TaskbarStatsOverlay : Form
     private readonly SolidBrush _brushLabel = new(Color.FromArgb(175, 180, 190));
     private readonly SolidBrush _brushNetDown = new(Color.FromArgb(0, 225, 255));
     private readonly SolidBrush _brushNetUp = new(Color.FromArgb(255, 185, 80));
+    private readonly SolidBrush _brushTempNormal = new(Color.FromArgb(180, 228, 255));
+    private readonly SolidBrush _brushTempWarm = new(Color.FromArgb(255, 185, 75));
+    private readonly SolidBrush _brushTempHot = new(Color.FromArgb(255, 90, 90));
     private readonly Pen _penDivider = new(Color.FromArgb(60, 255, 255, 255), 1f);
     private readonly SolidBrush _brushShadow = new(Color.FromArgb(90, 0, 0, 0));
     private readonly Pen _penShadowDivider = new(Color.FromArgb(80, 0, 0, 0), 1f);
@@ -395,12 +399,38 @@ public class TaskbarStatsOverlay : Form
 
         _speedBoxW = Math.Max(gMeasure.MeasureString("999.9 MB/s", _fontRegular, PointF.Empty, _sf).Width + 2f * _dpiScale, 58f * _dpiScale);
         _percentBoxW = Math.Max(gMeasure.MeasureString("100%", _fontRegular, PointF.Empty, _sf).Width + 2f * _dpiScale, 28f * _dpiScale);
+        string sampleTemp = _config.UseFahrenheit ? "199°" : "99°";
+        _tempBoxW = Math.Max(gMeasure.MeasureString(sampleTemp, _fontRegular, PointF.Empty, _sf).Width + 1f * _dpiScale, (_config.UseFahrenheit ? 25f : 19f) * _dpiScale);
         _cpuLabelW = gMeasure.MeasureString("CPU", _fontBold, PointF.Empty, _sf).Width;
         _ramLabelW = gMeasure.MeasureString("RAM", _fontBold, PointF.Empty, _sf).Width;
         _gpuLabelW = gMeasure.MeasureString("GPU", _fontBold, PointF.Empty, _sf).Width;
         _arrowW = gMeasure.MeasureString("▼ ", _fontBold, PointF.Empty, _sf).Width;
         _upPrefixW = gMeasure.MeasureString("UP ", _fontBold, PointF.Empty, _sf).Width;
         _dnPrefixW = gMeasure.MeasureString("DN ", _fontBold, PointF.Empty, _sf).Width;
+    }
+
+    public void RefreshLayoutMetrics()
+    {
+        if (IsDisposed) return;
+        RecomputeDpiAndDimensions();
+        UpdateDockPosition(force: true);
+        CheckVisibilityAndRender();
+    }
+
+    private string FormatTemp(int celsius)
+    {
+        int display = _config.UseFahrenheit
+            ? (int)Math.Round(celsius * 9.0 / 5.0 + 32.0)
+            : celsius;
+        return $"{display}°";
+    }
+
+    private SolidBrush GetTempBrush(int celsius, int warmThresholdC, int hotThresholdC)
+    {
+        if (!_config.ThermalWarningAccents) return _brushTempNormal;
+        if (celsius >= hotThresholdC) return _brushTempHot;
+        if (celsius >= warmThresholdC) return _brushTempWarm;
+        return _brushTempNormal;
     }
 
     private void DrawShadowText(Graphics g, string text, Font font, Brush brush, float x, float y, StringFormat format)
@@ -838,18 +868,13 @@ public class TaskbarStatsOverlay : Form
             // Formatted metric strings
             string uploadStr = HardwareMonitor.FormatSpeed(_latestStats.UploadSpeedBps);
             string downloadStr = HardwareMonitor.FormatSpeed(_latestStats.DownloadSpeedBps);
-            string cpuStr = $"{_latestStats.CpuPercent}%";
-            string ramStr = $"{_latestStats.RamPercent}%";
-            string gpuStr = $"{_latestStats.GpuPercent}%";
 
             int h = Height;
 
-            // 1. Fixed slot widths and module coordinates (Invariant to number changes!)
+            // 1. Fixed slot widths and module coordinates (Invariant to minor number changes!)
             float speedBoxW = _speedBoxW;
             float percentBoxW = _percentBoxW;
-            float cpuLabelW = _cpuLabelW;
-            float ramLabelW = _ramLabelW;
-            float gpuLabelW = _gpuLabelW;
+            float tempBoxW = _tempBoxW;
             float arrowW = _config.ShowNetArrows ? _arrowW : 0f;
             float upPrefixW = _config.ShowNetArrows ? 0f : _upPrefixW;
             bool showDown = _config.ShowDownloadSpeed;
@@ -857,7 +882,8 @@ public class TaskbarStatsOverlay : Form
             float dnPrefixW = _config.ShowNetArrows ? 0f : (showUp ? _dnPrefixW : 0f);
 
             float labelGap = 3f * _dpiScale;
-            float moduleGap = 8f * _dpiScale;
+            float tempGap = 4f * _dpiScale;
+            float moduleGap = 9f * _dpiScale;
             float divSlotW = 12f * _dpiScale;
 
             float curX = 2f;
@@ -868,7 +894,7 @@ public class TaskbarStatsOverlay : Form
             float downValX = downX + downPrefixActualW;
             if (showDown)
             {
-                curX = downValX + speedBoxW + moduleGap;
+                curX = downValX + speedBoxW + (showUp ? moduleGap : 0f);
             }
 
             // --- Upload Slot (Secondary) ---
@@ -877,12 +903,21 @@ public class TaskbarStatsOverlay : Form
             float upValX = upX + upPrefixActualW;
             if (showUp)
             {
-                curX = upValX + speedBoxW + moduleGap;
+                curX = upValX + speedBoxW;
             }
 
-            // --- Divider Line ---
             bool hasNet = showDown || showUp;
-            bool hasHw = _config.ShowCpu || _config.ShowRam || _config.ShowGpu;
+
+            // Build active hardware module slots uniformly (CPU, RAM, GPU)
+            var hwSlots = new (string label, string pctStr, int? tempC, string? tempStr, int warmC, int hotC, float lblX, float valX, float tempX)[3];
+            int hwCount = 0;
+
+            bool showCpu = _config.ShowCpu;
+            bool showRam = _config.ShowRam;
+            bool showGpu = _config.ShowGpu;
+            bool hasHw = showCpu || showRam || showGpu;
+
+            // --- Divider Line ---
             float divLineX = 0f;
             if (hasNet && hasHw)
             {
@@ -890,39 +925,45 @@ public class TaskbarStatsOverlay : Form
                 curX += divSlotW;
             }
 
-            // --- CPU Slot ---
-            bool showCpu = _config.ShowCpu;
-            float cpuLblX = curX;
-            float cpuValX = cpuLblX + cpuLabelW + labelGap;
+            void AddHwSlot(string label, float labelW, int percent, int? tempC, int warmC, int hotC)
+            {
+                if (hwCount > 0) curX += moduleGap;
+                float lblX = curX;
+                float valX = lblX + labelW + labelGap;
+                curX = valX + percentBoxW;
+
+                float tempX = 0f;
+                string? tempStr = null;
+                if (tempC.HasValue)
+                {
+                    tempStr = FormatTemp(tempC.Value);
+                    tempX = curX + tempGap;
+                    // Guard for 3-digit temperatures (>= 100) so digits never touch adjacent module
+                    float effectiveTempW = tempStr.Length >= 4
+                        ? Math.Max(tempBoxW, tempBoxW + 5f * _dpiScale)
+                        : tempBoxW;
+                    curX = tempX + effectiveTempW;
+                }
+
+                hwSlots[hwCount++] = (label, $"{percent}%", tempC, tempStr, warmC, hotC, lblX, valX, tempX);
+            }
+
             if (showCpu)
             {
-                curX = cpuValX + percentBoxW + moduleGap;
+                AddHwSlot("CPU", _cpuLabelW, _latestStats.CpuPercent, _config.ShowCpuTemp ? _latestStats.CpuTempC : null, 65, 82);
             }
-
-            // --- RAM Slot ---
-            bool showRam = _config.ShowRam;
-            float ramLblX = curX;
-            float ramValX = ramLblX + ramLabelW + labelGap;
             if (showRam)
             {
-                curX = ramValX + percentBoxW + moduleGap;
+                AddHwSlot("RAM", _ramLabelW, _latestStats.RamPercent, _config.ShowRamTemp ? _latestStats.RamTempC : null, 55, 65);
             }
-
-            // --- GPU Slot ---
-            bool showGpu = _config.ShowHardwareStats && _config.ShowGpu;
-            float gpuLblX = curX;
-            float gpuValX = gpuLblX + gpuLabelW + labelGap;
             if (showGpu)
             {
-                curX = gpuValX + percentBoxW + 4f * _dpiScale;
+                AddHwSlot("GPU", _gpuLabelW, _latestStats.GpuPercent, _config.ShowGpuTemp ? _latestStats.GpuTempC : null, 68, 81);
             }
-            else if (showRam)
+
+            if (hasNet || hasHw)
             {
-                curX = ramValX + percentBoxW + 4f * _dpiScale;
-            }
-            else if (showCpu)
-            {
-                curX = cpuValX + percentBoxW + 4f * _dpiScale;
+                curX += 4f * _dpiScale;
             }
 
             int neededWidth = Math.Max((int)Math.Ceiling(curX) + 2, 40);
@@ -992,28 +1033,19 @@ public class TaskbarStatsOverlay : Form
                 g.DrawLine(_penDivider, divLineX, rowY + 2f, divLineX, rowY + _fontLineHeight - 1f);
             }
 
-            // --- CPU Usage ---
-            if (showCpu)
+            // --- CPU / RAM / GPU Slots + Inline Compact Temps ---
+            for (int i = 0; i < hwCount; i++)
             {
-                DrawShadowText(g, "CPU", _fontBold, _brushLabel, cpuLblX, rowY, _sf);
-                var rectCpu = new RectangleF(cpuValX, rowY, percentBoxW, boxH);
-                DrawShadowText(g, cpuStr, _fontRegular, _brushVal, rectCpu, _sfRight);
-            }
+                ref readonly var slot = ref hwSlots[i];
+                DrawShadowText(g, slot.label, _fontBold, _brushLabel, slot.lblX, rowY, _sf);
+                var rectPct = new RectangleF(slot.valX, rowY, percentBoxW, boxH);
+                DrawShadowText(g, slot.pctStr, _fontRegular, _brushVal, rectPct, _sfRight);
 
-            // --- RAM Usage ---
-            if (showRam)
-            {
-                DrawShadowText(g, "RAM", _fontBold, _brushLabel, ramLblX, rowY, _sf);
-                var rectRam = new RectangleF(ramValX, rowY, percentBoxW, boxH);
-                DrawShadowText(g, ramStr, _fontRegular, _brushVal, rectRam, _sfRight);
-            }
-
-            // --- GPU Usage ---
-            if (showGpu)
-            {
-                DrawShadowText(g, "GPU", _fontBold, _brushLabel, gpuLblX, rowY, _sf);
-                var rectGpu = new RectangleF(gpuValX, rowY, percentBoxW, boxH);
-                DrawShadowText(g, gpuStr, _fontRegular, _brushVal, rectGpu, _sfRight);
+                if (slot.tempC.HasValue && slot.tempStr != null)
+                {
+                    var tempBrush = GetTempBrush(slot.tempC.Value, slot.warmC, slot.hotC);
+                    DrawShadowText(g, slot.tempStr, _fontRegular, tempBrush, slot.tempX, rowY, _sf);
+                }
             }
 
             // 3. Update layered window with true 32bpp alpha bitmap
@@ -1111,6 +1143,9 @@ public class TaskbarStatsOverlay : Form
             _brushLabel?.Dispose();
             _brushNetDown?.Dispose();
             _brushNetUp?.Dispose();
+            _brushTempNormal?.Dispose();
+            _brushTempWarm?.Dispose();
+            _brushTempHot?.Dispose();
             _penDivider?.Dispose();
             _brushShadow?.Dispose();
             _penShadowDivider?.Dispose();

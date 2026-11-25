@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Net.NetworkInformation;
+using System.Runtime;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -14,7 +15,10 @@ public readonly record struct HardwareStats(
     double RamTotalGB,
     long DownloadSpeedBps,
     long UploadSpeedBps,
-    int GpuPercent
+    int GpuPercent,
+    int? CpuTempC,
+    int? RamTempC,
+    int? GpuTempC
 );
 
 public class HardwareMonitor : IDisposable
@@ -114,9 +118,26 @@ public class HardwareMonitor : IDisposable
     private IntPtr _hGpuQuery = IntPtr.Zero;
     private IntPtr _hGpuCounter = IntPtr.Zero;
     private bool _gpuInitialized = false;
+    private IntPtr _gpuPdhBuffer = IntPtr.Zero;
+    private uint _gpuPdhBufferSize = 0;
+
+    // Temperature telemetry monitor (Only active when user enables temperature toggles)
+    private readonly ThermalMonitor _thermalMonitor = new();
+    private int _isSampling;
+    private bool _tempsWereEnabled;
 
     public HardwareStats CurrentStats { get; private set; }
+    public ThermalAccessStatus ThermalStatus => _thermalMonitor.Status;
     public event Action<HardwareStats>? StatsUpdated;
+
+    public void TriggerRefresh()
+    {
+        try
+        {
+            _timer.Change(0, 1000);
+        }
+        catch { }
+    }
 
     public HardwareMonitor(AppConfig config)
     {
@@ -140,6 +161,8 @@ public class HardwareMonitor : IDisposable
 
     private void OnTick(object? state)
     {
+        if (Interlocked.Exchange(ref _isSampling, 1) != 0) return;
+
         try
         {
             _tickCount++;
@@ -213,6 +236,31 @@ public class HardwareMonitor : IDisposable
                 gpuPercent = SampleGpuUsageNative();
             }
 
+            // 5. Temperatures Measurement (Only initialized & polled when user enables temp toggles)
+            bool wantCpuTemp = _config.ShowHardwareStats && _config.ShowCpu && _config.ShowCpuTemp;
+            bool wantRamTemp = _config.ShowHardwareStats && _config.ShowRam && _config.ShowRamTemp;
+            bool wantGpuTemp = _config.ShowHardwareStats && _config.ShowGpu && _config.ShowGpuTemp;
+            bool anyTempWanted = wantCpuTemp || wantRamTemp || wantGpuTemp;
+
+            int? cpuTempC = null, ramTempC = null, gpuTempC = null;
+            if (anyTempWanted)
+            {
+                _tempsWereEnabled = true;
+                (cpuTempC, ramTempC, gpuTempC) = _thermalMonitor.SampleTemperatures(wantCpuTemp, wantRamTemp, wantGpuTemp);
+            }
+            else if (_tempsWereEnabled)
+            {
+                _tempsWereEnabled = false;
+                _thermalMonitor.ShutdownAll();
+                try
+                {
+                    GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+                    GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+                    EmptyWorkingSet(GetCurrentProcess());
+                }
+                catch { }
+            }
+
             CurrentStats = new HardwareStats(
                 cpuPercent,
                 ramPercent,
@@ -220,23 +268,31 @@ public class HardwareMonitor : IDisposable
                 Math.Round(ramTotalGB, 1),
                 downloadSpeedBps,
                 uploadSpeedBps,
-                gpuPercent
+                gpuPercent,
+                cpuTempC,
+                ramTempC,
+                gpuTempC
             );
 
             StatsUpdated?.Invoke(CurrentStats);
 
-            // 5. Periodic Working Set & Memory Trimmer (Runs early at tick 3, then every 15s)
-            if (_tickCount == 3 || _tickCount % 15 == 0)
+            // 6. Periodic Working Set & Memory Trimmer (Early at tick 2, post-update at tick 8, then every 10s)
+            if (_tickCount == 2 || _tickCount == 8 || _tickCount % 10 == 0)
             {
                 try
                 {
-                    GC.Collect(2, GCCollectionMode.Optimized, false);
+                    GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+                    GC.Collect(2, GCCollectionMode.Aggressive, true, true);
                     EmptyWorkingSet(GetCurrentProcess());
                 }
                 catch { }
             }
         }
         catch { }
+        finally
+        {
+            Interlocked.Exchange(ref _isSampling, 0);
+        }
     }
 
     private void RefreshNetworkInterfacesIfNeeded(bool force = false)
@@ -343,28 +399,28 @@ public class HardwareMonitor : IDisposable
 
             if (status == unchecked((int)PDH_MORE_DATA) && bufferSize > 0)
             {
-                IntPtr buffer = Marshal.AllocHGlobal((int)bufferSize);
-                try
+                if (_gpuPdhBuffer == IntPtr.Zero || _gpuPdhBufferSize < bufferSize)
                 {
-                    if (PdhGetFormattedCounterArrayW(_hGpuCounter, PDH_FMT_DOUBLE, ref bufferSize, ref itemCount, buffer) == 0)
-                    {
-                        double total = 0;
-                        int itemSize = Marshal.SizeOf<PDH_FMT_COUNTERVALUE_ITEM_DOUBLE>();
-                        for (int i = 0; i < itemCount; i++)
-                        {
-                            IntPtr itemPtr = IntPtr.Add(buffer, i * itemSize);
-                            var item = Marshal.PtrToStructure<PDH_FMT_COUNTERVALUE_ITEM_DOUBLE>(itemPtr);
-                            if (item.TaggedValue.CStatus == 0 && item.TaggedValue.doubleValue > 0)
-                            {
-                                total += item.TaggedValue.doubleValue;
-                            }
-                        }
-                        return (int)Math.Clamp(Math.Round(total), 0, 100);
-                    }
+                    if (_gpuPdhBuffer != IntPtr.Zero) Marshal.FreeHGlobal(_gpuPdhBuffer);
+                    _gpuPdhBufferSize = bufferSize + 1024;
+                    _gpuPdhBuffer = Marshal.AllocHGlobal((int)_gpuPdhBufferSize);
                 }
-                finally
+
+                uint actualSize = _gpuPdhBufferSize;
+                if (PdhGetFormattedCounterArrayW(_hGpuCounter, PDH_FMT_DOUBLE, ref actualSize, ref itemCount, _gpuPdhBuffer) == 0)
                 {
-                    Marshal.FreeHGlobal(buffer);
+                    double total = 0;
+                    int itemSize = Marshal.SizeOf<PDH_FMT_COUNTERVALUE_ITEM_DOUBLE>();
+                    for (int i = 0; i < itemCount; i++)
+                    {
+                        IntPtr itemPtr = IntPtr.Add(_gpuPdhBuffer, i * itemSize);
+                        var item = Marshal.PtrToStructure<PDH_FMT_COUNTERVALUE_ITEM_DOUBLE>(itemPtr);
+                        if (item.TaggedValue.CStatus == 0 && item.TaggedValue.doubleValue > 0)
+                        {
+                            total += item.TaggedValue.doubleValue;
+                        }
+                    }
+                    return (int)Math.Clamp(Math.Round(total), 0, 100);
                 }
             }
         }
@@ -399,6 +455,13 @@ public class HardwareMonitor : IDisposable
     public void Dispose()
     {
         _timer?.Dispose();
+        _thermalMonitor.Dispose();
+        if (_gpuPdhBuffer != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_gpuPdhBuffer);
+            _gpuPdhBuffer = IntPtr.Zero;
+            _gpuPdhBufferSize = 0;
+        }
         if (_hGpuQuery != IntPtr.Zero)
         {
             try { PdhCloseQuery(_hGpuQuery); } catch { }
