@@ -5,6 +5,8 @@ using System.IO;
 using System.IO.Pipes;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Threading;
 
 namespace CleanTB;
@@ -129,6 +131,43 @@ public class TaskbarController : IDisposable
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool SetThreadDesktop(IntPtr hDesktop);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowCompositionAttribute(IntPtr hwnd, ref WINDOWCOMPOSITIONATTRIBDATA data);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam, uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+    private enum AccentState
+    {
+        ACCENT_DISABLED = 0,
+        ACCENT_ENABLE_GRADIENT = 1,
+        ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
+        ACCENT_ENABLE_BLURBEHIND = 3,
+        ACCENT_ENABLE_ACRYLICBLURBEHIND = 4,
+        ACCENT_INVALID_STATE = 5
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AccentPolicy
+    {
+        public AccentState AccentState;
+        public uint AccentFlags;
+        public uint GradientColor;
+        public uint AnimationId;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WINDOWCOMPOSITIONATTRIBDATA
+    {
+        public int Attribute;
+        public IntPtr Data;
+        public int SizeOfData;
+    }
+
+    private const int WCA_ACCENT_POLICY = 19;
+    private const uint WM_DWMCOMPOSITIONCHANGED = 0x031E;
+    private const uint SMTO_ABORTIFHUNG = 0x0002;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct LUID
@@ -260,8 +299,29 @@ public class TaskbarController : IDisposable
     private bool _hideBorder = true;
 
     public bool IsConnected => _useWorkerBridge
-        ? (_pipeClient != null && _pipeClient.IsConnected)
+        ? (_pipeClient != null && _pipeClient.IsConnected && _workerConnectedReported)
         : (_service != null);
+
+    private bool _workerConnectedReported;
+    private bool _loggedFallbackOnce;
+    private static readonly object _diagLock = new();
+
+    private static void LogTapDiag(string message)
+    {
+        try
+        {
+            string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CleanTB");
+            Directory.CreateDirectory(dir);
+            string logPath = Path.Combine(dir, "tap.log");
+            lock (_diagLock)
+            {
+                if (File.Exists(logPath) && new FileInfo(logPath).Length > 32768)
+                    File.WriteAllText(logPath, string.Empty);
+                File.AppendAllText(logPath, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [PID:{Environment.ProcessId}] {message}{Environment.NewLine}");
+            }
+        }
+        catch { }
+    }
 
     public TaskbarController() : this(isWorkerProcess: false)
     {
@@ -301,30 +361,40 @@ public class TaskbarController : IDisposable
         IntPtr tray = FindWindow("Shell_TrayWnd", null);
         if (tray == IntPtr.Zero) return false;
 
-        string tapDllPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ExplorerTAP.dll");
-        if (!File.Exists(tapDllPath))
+        string? tapDllPath = Program.PreferredTapDllPath;
+        if (string.IsNullOrEmpty(tapDllPath) || !File.Exists(tapDllPath))
         {
-            string fallbackPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CleanTB", "ExplorerTAP.dll");
-            if (File.Exists(fallbackPath))
-            {
-                tapDllPath = fallbackPath;
-            }
-            else
-            {
-                throw new FileNotFoundException("ExplorerTAP.dll not found in application directory or AppData!", tapDllPath);
-            }
+            string baseCandidate = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ExplorerTAP.dll");
+            string localCandidate = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CleanTB", "ExplorerTAP.dll");
+            tapDllPath = File.Exists(baseCandidate) ? baseCandidate
+                       : File.Exists(localCandidate) ? localCandidate
+                       : null;
+        }
+
+        if (string.IsNullOrEmpty(tapDllPath))
+        {
+            LogTapDiag("Connect: ExplorerTAP.dll not found in native dir, BaseDirectory, or LocalAppData.");
+            return false;
         }
 
         if (_hTapModule == IntPtr.Zero)
         {
             _hTapModule = LoadLibrary(tapDllPath);
-            if (_hTapModule == IntPtr.Zero) return false;
+            if (_hTapModule == IntPtr.Zero)
+            {
+                LogTapDiag($"Connect: LoadLibrary failed for '{tapDllPath}' (Win32={Marshal.GetLastWin32Error()}).");
+                return false;
+            }
         }
 
         if (_injectFunc == null)
         {
             IntPtr proc = GetProcAddress(_hTapModule, "InjectExplorerTAP");
-            if (proc == IntPtr.Zero) return false;
+            if (proc == IntPtr.Zero)
+            {
+                LogTapDiag($"Connect: GetProcAddress(InjectExplorerTAP) failed (Win32={Marshal.GetLastWin32Error()}).");
+                return false;
+            }
             _injectFunc = Marshal.GetDelegateForFunctionPointer<PFN_InjectExplorerTAP>(proc);
         }
 
@@ -340,6 +410,7 @@ public class TaskbarController : IDisposable
 
             _pServiceRaw = pServicePtr;
             _service = (ITaskbarAppearanceService)Marshal.GetObjectForIUnknown(pServicePtr);
+            _loggedFallbackOnce = false;
 
             // Register safety net: if CleanTB (or worker) process terminates, restore taskbar automatically
             try
@@ -351,6 +422,7 @@ public class TaskbarController : IDisposable
             return true;
         }
 
+        LogTapDiag($"Connect: InjectExplorerTAP failed (hr=0x{hr:X8}, ptr=0x{pServicePtr.ToInt64():X}, dll='{tapDllPath}', OS={Environment.OSVersion.Version}).");
         return false;
     }
 
@@ -361,12 +433,18 @@ public class TaskbarController : IDisposable
 
         if (_useWorkerBridge)
         {
-            SendWorkerCommand(CMD_APPLY, (byte)mode, hideBorder ? (byte)1 : (byte)0);
+            if (SendWorkerCommand(CMD_APPLY, (byte)mode, hideBorder ? (byte)1 : (byte)0))
+            {
+                return;
+            }
+            // If worker bridge failed or TAP inside worker failed to inject, try direct fallback composition
+            ApplyFallbackToAllTaskbars(mode);
             return;
         }
 
         if (_service == null && !Connect())
         {
+            ApplyFallbackToAllTaskbars(mode);
             return;
         }
 
@@ -374,6 +452,66 @@ public class TaskbarController : IDisposable
         foreach (var hwnd in taskbars)
         {
             ApplyToWindow(hwnd, mode, hideBorder);
+        }
+    }
+
+    private void ApplyFallbackToAllTaskbars(TaskbarMode mode)
+    {
+        if (!_loggedFallbackOnce)
+        {
+            _loggedFallbackOnce = true;
+            LogTapDiag($"ApplyFallbackToAllTaskbars: Using Win32 SetWindowCompositionAttribute fallback for mode={mode}.");
+        }
+        foreach (var hwnd in GetAllTaskbarWindows())
+        {
+            ApplyFallbackComposition(hwnd, mode);
+        }
+    }
+
+    private static void ApplyFallbackComposition(IntPtr hwnd, TaskbarMode mode)
+    {
+        try
+        {
+            if (mode == TaskbarMode.Normal)
+            {
+                var off = new AccentPolicy { AccentState = AccentState.ACCENT_DISABLED, AccentFlags = 0, GradientColor = 0 };
+                SetAccentPolicy(hwnd, ref off);
+                SendMessageTimeout(hwnd, WM_DWMCOMPOSITIONCHANGED, (IntPtr)1, IntPtr.Zero, SMTO_ABORTIFHUNG, 500, out _);
+                return;
+            }
+
+            AccentPolicy policy = mode switch
+            {
+                TaskbarMode.Clear => new AccentPolicy { AccentState = AccentState.ACCENT_ENABLE_TRANSPARENTGRADIENT, AccentFlags = 2, GradientColor = 0x00000000 },
+                TaskbarMode.Blur => new AccentPolicy { AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND, AccentFlags = 2, GradientColor = 0x40141414 },
+                TaskbarMode.Acrylic => new AccentPolicy { AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND, AccentFlags = 0, GradientColor = 0x50202020 },
+                TaskbarMode.TintedDark => new AccentPolicy { AccentState = AccentState.ACCENT_ENABLE_TRANSPARENTGRADIENT, AccentFlags = 2, GradientColor = 0x66141414 },
+                TaskbarMode.TintedLight => new AccentPolicy { AccentState = AccentState.ACCENT_ENABLE_TRANSPARENTGRADIENT, AccentFlags = 2, GradientColor = 0x66EEEEEE },
+                _ => new AccentPolicy { AccentState = AccentState.ACCENT_ENABLE_TRANSPARENTGRADIENT, AccentFlags = 2, GradientColor = 0x00000000 }
+            };
+            SetAccentPolicy(hwnd, ref policy);
+        }
+        catch { }
+    }
+
+    private static void SetAccentPolicy(IntPtr hwnd, ref AccentPolicy policy)
+    {
+        int size = Marshal.SizeOf<AccentPolicy>();
+        IntPtr ptr = Marshal.AllocHGlobal(size);
+        try
+        {
+            Marshal.StructureToPtr(policy, ptr, false);
+            var data = new WINDOWCOMPOSITIONATTRIBDATA
+            {
+                Attribute = WCA_ACCENT_POLICY,
+                Data = ptr,
+                SizeOfData = size
+            };
+            SetWindowCompositionAttribute(hwnd, ref data);
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(ptr);
         }
     }
 
@@ -456,16 +594,20 @@ public class TaskbarController : IDisposable
         if (_useWorkerBridge)
         {
             SendWorkerCommand(CMD_RESTORE, 0, 0, spawnIfMissing: false);
-            return;
         }
-
-        if (_service != null)
+        else if (_service != null)
         {
             try
             {
                 _service.RestoreAllTaskbarsToDefault();
             }
             catch { }
+            return;
+        }
+
+        foreach (var hwnd in GetAllTaskbarWindows())
+        {
+            ApplyFallbackComposition(hwnd, TaskbarMode.Normal);
         }
     }
 
@@ -493,25 +635,28 @@ public class TaskbarController : IDisposable
 
             if (!SpawnMediumIntegrityWorker(exePath, args, workDir, out _workerProcess))
             {
+                LogTapDiag($"EnsureWorkerConnected: Failed to spawn Medium-IL worker for '{exePath}'.");
                 return false;
             }
 
             try
             {
                 var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None);
-                client.Connect(4000);
+                // Allow up to 15 seconds on first cold boot when Defender scans single-file extraction
+                client.Connect(15000);
                 _pipeClient = client;
                 return client.IsConnected;
             }
-            catch
+            catch (Exception ex)
             {
+                LogTapDiag($"EnsureWorkerConnected: Pipe connect failed ({ex.GetType().Name}: {ex.Message}).");
                 CleanupWorkerBridge(sendShutdown: false);
                 return false;
             }
         }
     }
 
-    private void SendWorkerCommand(byte cmd, byte arg1, byte arg2, bool spawnIfMissing = true)
+    private bool SendWorkerCommand(byte cmd, byte arg1, byte arg2, bool spawnIfMissing = true)
     {
         lock (_bridgeLock)
         {
@@ -521,7 +666,8 @@ public class TaskbarController : IDisposable
                 {
                     if (!spawnIfMissing || !EnsureWorkerConnected())
                     {
-                        return;
+                        _workerConnectedReported = false;
+                        return false;
                     }
                 }
 
@@ -532,14 +678,22 @@ public class TaskbarController : IDisposable
                     _pipeClient.Flush();
 
                     int ack = _pipeClient.ReadByte();
-                    if (ack >= 0) return;
+                    if (ack >= 0)
+                    {
+                        _workerConnectedReported = ack == 1;
+                        return _workerConnectedReported;
+                    }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    LogTapDiag($"SendWorkerCommand: IPC error on attempt {attempt + 1} ({ex.Message}).");
                     CleanupWorkerBridge(sendShutdown: false);
-                    if (!spawnIfMissing) return;
+                    _workerConnectedReported = false;
+                    if (!spawnIfMissing) return false;
                 }
             }
+            _workerConnectedReported = false;
+            return false;
         }
     }
 
@@ -790,7 +944,26 @@ public class TaskbarController : IDisposable
 
         var hostLock = new object();
         using var controller = new TaskbarController(isWorkerProcess: true);
-        using var server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.None);
+
+        var pipeSecurity = new PipeSecurity();
+        pipeSecurity.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+        pipeSecurity.AddAccessRule(new PipeAccessRule(
+            new SecurityIdentifier(WellKnownSidType.AuthenticatedUserSid, null),
+            PipeAccessRights.FullControl,
+            AccessControlType.Allow));
+
+        using var server = NamedPipeServerStreamAcl.Create(
+            pipeName,
+            PipeDirection.InOut,
+            1,
+            PipeTransmissionMode.Byte,
+            PipeOptions.None,
+            0,
+            0,
+            pipeSecurity);
         int stopping = 0;
 
         // Periodic working-set trimmer so idle COM/CLR pages never sit resident in Task Manager

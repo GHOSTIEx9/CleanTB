@@ -28,7 +28,7 @@ public class AppConfig
 
     // Hardware Stats Display Settings
     public bool ShowHardwareStats { get; set; } = true;
-    public StatsPosition StatsPosition { get; set; } = StatsPosition.Right;
+    public StatsPosition StatsPosition { get; set; } = StatsPosition.Left;
     public bool ShowDownloadSpeed { get; set; } = true;
     public bool ShowUploadSpeed { get; set; } = false;
     public bool ShowNetArrows { get; set; } = false;

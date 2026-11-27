@@ -1,6 +1,10 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -241,57 +245,167 @@ static class Program
         }
     }
 
+    [DllImport("kernel32.dll", EntryPoint = "DeleteFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool DeleteFileW(string lpFileName);
+
+    internal static string? PreferredTapDllPath { get; private set; }
+
     private static void EnsureEmbeddedDependencies()
     {
-        string baseDir = AppDomain.CurrentDomain.BaseDirectory;
         string localAppDataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CleanTB");
+        string tempFallbackDir = Path.Combine(Path.GetTempPath(), "CleanTB");
 
-        ExtractResourceIfMissing("CleanTB.ExplorerTAP.dll", "ExplorerTAP.dll", baseDir, localAppDataDir);
-        ExtractResourceIfMissing("CleanTB.ExplorerHooks.dll", "ExplorerHooks.dll", baseDir, localAppDataDir);
+        // Compute short content hash of embedded ExplorerTAP.dll so updates never collide with
+        // an older locked ExplorerTAP.dll pinned inside running explorer.exe, keep the folder
+        // next to CleanTB.exe 100% DLL-free, and grant ALL APPLICATION PACKAGES (S-1-15-2-1) RX access.
+        string versionTag = ComputeEmbeddedTapTag();
+        string preferredDir = Path.Combine(localAppDataDir, $"native_{versionTag}");
+        string fallbackDir = Path.Combine(tempFallbackDir, $"native_{versionTag}");
+
+        PreferredTapDllPath = ExtractVerifiedResource("CleanTB.ExplorerTAP.dll", "ExplorerTAP.dll", preferredDir, fallbackDir);
+
+        CleanupOldNativeDirs(localAppDataDir, preferredDir);
+        CleanupOldNativeDirs(tempFallbackDir, fallbackDir);
     }
 
-    private static void ExtractResourceIfMissing(string resourceName, string fileName, string primaryDir, string fallbackDir)
+    private static string ComputeEmbeddedTapTag()
     {
         try
         {
-            string primaryPath = Path.Combine(primaryDir, fileName);
-            if (File.Exists(primaryPath)) return;
-
-            // Attempt write to primary (app directory)
-            try
+            using var stream = typeof(Program).Assembly.GetManifestResourceStream("CleanTB.ExplorerTAP.dll");
+            if (stream != null)
             {
-                using var stream = typeof(Program).Assembly.GetManifestResourceStream(resourceName);
-                if (stream != null)
-                {
-                    using var fileStream = new FileStream(primaryPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                    stream.CopyTo(fileStream);
-                    return;
-                }
+                byte[] hash = SHA256.HashData(stream);
+                return Convert.ToHexString(hash.AsSpan(0, 4)).ToLowerInvariant();
             }
-            catch (UnauthorizedAccessException)
-            {
-                // App directory is write-protected; fall back to local AppData
-            }
+        }
+        catch { }
+        return "v1";
+    }
 
-            // Fallback to %LOCALAPPDATA%\CleanTB
-            string fallbackPath = Path.Combine(fallbackDir, fileName);
-            if (File.Exists(fallbackPath)) return;
-
-            if (!Directory.Exists(fallbackDir))
-            {
-                Directory.CreateDirectory(fallbackDir);
-            }
-
-            using var fallbackStream = typeof(Program).Assembly.GetManifestResourceStream(resourceName);
-            if (fallbackStream != null)
-            {
-                using var fileStream = new FileStream(fallbackPath, FileMode.Create, FileAccess.Write, FileShare.None);
-                fallbackStream.CopyTo(fileStream);
-            }
+    private static string? ExtractVerifiedResource(string resourceName, string fileName, string preferredDir, string fallbackDir)
+    {
+        byte[]? embeddedBytes = null;
+        try
+        {
+            using var stream = typeof(Program).Assembly.GetManifestResourceStream(resourceName);
+            if (stream == null) return null;
+            using var ms = new MemoryStream();
+            stream.CopyTo(ms);
+            embeddedBytes = ms.ToArray();
         }
         catch
         {
-            // Silently continue if extraction fails; controller has its own verification
+            return null;
         }
+
+        string? result = TryWriteVerifiedFile(Path.Combine(preferredDir, fileName), embeddedBytes, grantAppContainerAcl: true);
+        if (!string.IsNullOrEmpty(result)) return result;
+
+        return TryWriteVerifiedFile(Path.Combine(fallbackDir, fileName), embeddedBytes, grantAppContainerAcl: true);
+    }
+
+    private static string? TryWriteVerifiedFile(string targetPath, byte[] expectedBytes, bool grantAppContainerAcl)
+    {
+        try
+        {
+            string? dir = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            if (grantAppContainerAcl && !string.IsNullOrEmpty(dir))
+            {
+                EnsureAppContainerReadable(dir, isDirectory: true);
+            }
+
+            bool needsWrite = !File.Exists(targetPath);
+            if (!needsWrite)
+            {
+                try
+                {
+                    var fi = new FileInfo(targetPath);
+                    if (fi.Length != expectedBytes.Length)
+                    {
+                        needsWrite = true;
+                    }
+                    else
+                    {
+                        byte[] existing = File.ReadAllBytes(targetPath);
+                        if (!existing.AsSpan().SequenceEqual(expectedBytes))
+                            needsWrite = true;
+                    }
+                }
+                catch
+                {
+                    needsWrite = true;
+                }
+            }
+
+            if (needsWrite)
+            {
+                using var fs = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+                fs.Write(expectedBytes, 0, expectedBytes.Length);
+            }
+
+            // Unblock Mark-of-the-Web and ensure explorer.exe / XAML host can LoadLibrary it
+            try { DeleteFileW(targetPath + ":Zone.Identifier"); } catch { }
+            if (grantAppContainerAcl)
+            {
+                EnsureAppContainerReadable(targetPath, isDirectory: false);
+            }
+
+            return targetPath;
+        }
+        catch
+        {
+            return File.Exists(targetPath) ? targetPath : null;
+        }
+    }
+
+    private static void EnsureAppContainerReadable(string path, bool isDirectory)
+    {
+        try
+        {
+            var appPackages = new SecurityIdentifier("S-1-15-2-1"); // ALL APPLICATION PACKAGES
+            var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+            var inherit = isDirectory
+                ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit
+                : InheritanceFlags.None;
+
+            if (isDirectory)
+            {
+                var di = new DirectoryInfo(path);
+                DirectorySecurity sec = di.GetAccessControl();
+                sec.AddAccessRule(new FileSystemAccessRule(appPackages, FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
+                sec.AddAccessRule(new FileSystemAccessRule(users, FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
+                di.SetAccessControl(sec);
+            }
+            else
+            {
+                var fi = new FileInfo(path);
+                FileSecurity sec = fi.GetAccessControl();
+                sec.AddAccessRule(new FileSystemAccessRule(appPackages, FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+                sec.AddAccessRule(new FileSystemAccessRule(users, FileSystemRights.ReadAndExecute, AccessControlType.Allow));
+                fi.SetAccessControl(sec);
+            }
+        }
+        catch { }
+    }
+
+    private static void CleanupOldNativeDirs(string localAppDataDir, string keepDir)
+    {
+        try
+        {
+            if (!Directory.Exists(localAppDataDir)) return;
+            foreach (string d in Directory.GetDirectories(localAppDataDir, "native_*"))
+            {
+                if (!string.Equals(d, keepDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    try { Directory.Delete(d, recursive: true); } catch { }
+                }
+            }
+        }
+        catch { }
     }
 }

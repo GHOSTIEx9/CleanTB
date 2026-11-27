@@ -62,7 +62,7 @@ Engineered around native Win32 APIs and `ExplorerTAP.dll`, CleanTB delivers crys
 ---
 
 ### ↔️ Independent Placement & Custom Dragging
-- **Dock Separately**: Dock Hardware Stats and Wireless Device Batteries independently to the **Left** (empty taskbar space) or **Right** (next to the system tray).
+- **Dock Separately**: Dock Hardware Stats (Left by default on fresh launch) and Wireless Device Batteries independently to the **Left** (empty taskbar space) or **Right** (next to the system tray).
 - **Free Drag & Drop**: Drag either HUD anywhere on screen; positions are remembered across reboots.
 
 ---
@@ -86,7 +86,7 @@ CleanTB keeps resource usage ultra-low by keeping heavy sensor engines completel
 | **CPU Utilization** | **< 0.1%** (event-driven message loop + 1s lightweight native Win32 polling) |
 | **Disk I/O** | **0 KB/s** (no background logging or telemetry) |
 | **Network Usage** | **0 KB/s** (offline except optional GitHub Releases update check) |
-| **Portable Packaging** | **Single standalone `CleanTB.exe`** (all native dependencies and icon embedded) |
+| **Portable Packaging** | **Single standalone `CleanTB.exe`** (no visible `.dll` clutter in your app folder — native runtime files are extracted cleanly inside `%LOCALAPPDATA%\CleanTB`) |
 
 ---
 

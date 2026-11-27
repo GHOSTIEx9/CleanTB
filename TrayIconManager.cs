@@ -76,6 +76,8 @@ public class TrayIconManager : IDisposable
     private ToolStripMenuItem _itemCheckUpdates = null!;
     private ToolStripMenuItem _itemAutoUpdate = null!;
     private System.Windows.Forms.Timer? _autoUpdateTimer;
+    private System.Windows.Forms.Timer? _tapRetryTimer;
+    private int _tapRetryAttempts;
 
     public TrayIconManager(TaskbarController controller, AppConfig config)
     {
@@ -142,6 +144,30 @@ public class TrayIconManager : IDisposable
         UpdateMenuStates();
         _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
         ReassertOverlaysOnTop();
+
+        // Retry TAP injection automatically if Explorer XAML taskbar wasn't ready at cold login
+        if (!_controller.IsConnected)
+        {
+            _tapRetryTimer = new System.Windows.Forms.Timer { Interval = 2500 };
+            _tapRetryTimer.Tick += (s, e) =>
+            {
+                _tapRetryAttempts++;
+                _controller.ApplyAppearance(_config.Mode, _config.HideBorder);
+                ReassertOverlaysOnTop();
+
+                if (_controller.IsConnected || _tapRetryAttempts >= 3)
+                {
+                    _tapRetryTimer?.Stop();
+                    _tapRetryTimer?.Dispose();
+                    _tapRetryTimer = null;
+                }
+                else
+                {
+                    _tapRetryTimer!.Interval = 6000;
+                }
+            };
+            _tapRetryTimer.Start();
+        }
 
         if (_config.AutoCheckUpdates)
         {
@@ -1150,6 +1176,9 @@ public class TrayIconManager : IDisposable
 
     public void Dispose()
     {
+        _tapRetryTimer?.Stop();
+        _tapRetryTimer?.Dispose();
+        _tapRetryTimer = null;
         _autoUpdateTimer?.Stop();
         _autoUpdateTimer?.Dispose();
         _autoUpdateTimer = null;
